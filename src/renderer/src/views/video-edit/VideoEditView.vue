@@ -186,7 +186,9 @@ const action = {
 
     const sumitAudio = {}
     if (select.uploaded?.audioUrl) {
-      sumitAudio.audio_path = select.uploaded.audioUrl
+      // Web build: `file` is the picked File and is uploaded as multipart; the desktop
+      // build keeps sending the local path (`audioUrl`).
+      sumitAudio.audio_path = select.uploaded.file || select.uploaded.audioUrl
     } else {
       sumitAudio.voice_id = select.speaker.voice_id
     }

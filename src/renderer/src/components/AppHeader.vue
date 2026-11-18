@@ -28,18 +28,18 @@
           </t-dropdown-item>
         </t-dropdown-menu>
       </t-dropdown>
-      <div class="header-right-item" @click="action.minimize">
+      <div class="header-right-item" v-if="isDesktop" @click="action.minimize">
         <t-tooltip :content="$t('common.header.minimizeText')">
           <img src="@renderer/assets/images/icons/minimize.png" />
         </t-tooltip>
       </div>
-      <div class="header-right-item" @click="action.maximize">
+      <div class="header-right-item" v-if="isDesktop" @click="action.maximize">
         <t-tooltip :content="state.isMaximized ? $t('common.header.restoreText') : $t('common.header.minimizeText')
           ">
           <img src="@renderer/assets/images/icons/maximize.png" />
         </t-tooltip>
       </div>
-      <div class="header-right-item" @click="action.close">
+      <div class="header-right-item" v-if="isDesktop" @click="action.close">
         <t-tooltip :content="$t('common.header.closeText')">
           <img src="@renderer/assets/images/icons/close.png" />
         </t-tooltip>
@@ -50,7 +50,7 @@
 
 <script setup>
 import { reactive, watch } from 'vue'
-import { Client } from '@renderer/client'
+import { Client, isDesktop } from '@renderer/client'
 import { useHomeStore } from '@renderer/stores/home.js'
 import { useI18n } from 'vue-i18n'
 import { saveContext } from '@renderer/api/index.js'
@@ -100,6 +100,7 @@ const action = {
     action.setIsMaximized()
   },
   async setIsMaximized() {
+    if (!isDesktop) return
     state.isMaximized = await Client.app.isMaximized()
   },
   minimize() {

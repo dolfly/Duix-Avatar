@@ -16,5 +16,19 @@ module.exports = {
     'no-unused-vars': 'off',
     'vue/require-default-prop': 'off',
     'vue/multi-word-component-names': 'off'
-  }
+  },
+  overrides: [
+    {
+      // Node-side code: API server and build/dev scripts.
+      files: ['server/**/*.js', 'scripts/**/*.mjs', '*.config.mjs'],
+      env: {
+        node: true,
+        es2022: true
+      },
+      parserOptions: {
+        ecmaVersion: 2022,
+        sourceType: 'module'
+      }
+    }
+  ]
 }

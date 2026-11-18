@@ -2,3 +2,8 @@ node_modules
 dist
 out
 .gitignore
+src/renderer/public
+server/node_modules
+data
+.samples
+.devdata

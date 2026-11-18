@@ -1,0 +1,24 @@
+# Keep the build context small: no node_modules, no Electron output, no local data.
+.git
+.github
+.idea
+.vscode
+.samples
+data
+dist
+out
+node_modules
+**/node_modules
+**/*.log
+*.log*
+.DS_Store
+
+# Never ship real data or credentials into an image
+.env
+.env.*
+!.env.example
+
+# Documentation and local test fixtures
+doc
+*.pdf
+server/test

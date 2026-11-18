@@ -1,0 +1,27 @@
+{
+  "name": "duix-avatar-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Duix.Avatar web backend: rqlite backed metadata, media storage and GPU service orchestration",
+  "license": "MIT",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "axios": "1.7.9",
+    "express": "4.21.2",
+    "multer": "2.0.2"
+  },
+  "devDependencies": {
+    "supertest": "7.0.0",
+    "vitest": "2.1.8"
+  }
+}

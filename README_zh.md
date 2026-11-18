@@ -289,6 +289,23 @@ docker-compose -f docker-compose-linux.yml up -d
 
   > 提醒：在Ubuntu系统中，如果您使用`root`用户进入桌面，直接双击`Duix.Avatar-x.x.x.AppImage`可能运行不了，需要在命令行终端中执行`./Duix.Avatar-x.x.x.AppImage --no-sandbox`,加上`--no-sandbox`参数即可。
 
+## Web 部署（浏览器版，无需 Electron 客户端）
+
+同一套前端、同一批 GPU 服务，改成 HTTP 交付：Web 前端（nginx）+ 服务端 API + [rqlite](https://github.com/rqlite/rqlite) 存储元数据。
+不再安装 ffmpeg 二进制，音视频转码在浏览器里用 ffmpeg.wasm 完成。
+
+```bash
+git clone https://github.com/dolfly/Duix-Avatar.git
+cd Duix-Avatar
+docker compose up -d          # rqlite + server + web + TTS + gen-video
+# 浏览器打开 http://<服务器IP>:8080
+```
+
+模特克隆、音色复刻、文案/音频驱动视频生成、作品管理全部可用；多个浏览器可以同时连接同一个服务端，
+视频队列也支持多实例部署（任务租约抢占，不会重复处理）。
+
+完整说明（环境变量、备份恢复、多实例、常见问题）见 [doc/web-deployment.md](doc/web-deployment.md)。
+
 ## 开放 API
 
 我们开放了模特训练和视频合成的API，Docker 启动后会在本地暴露几个端口，通过`http://127.0.0.1`可以调用。
