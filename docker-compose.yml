@@ -1,11 +1,18 @@
 # Duix.Avatar web stack: browser front end + API server + rqlite + the upstream GPU services.
 #
-#   cp .env.example .env      # optional: ports, data dir
+#   cp .env.example .env      # optional: ports, data dir, image tags
 #   docker compose up -d      # first run pulls guiji2025/* images (tens of GB)
 #   open http://<host>:8080
 #
 # The three GPU images are the upstream ones and are unchanged; only the client layer moved
 # from Electron to the browser (ffmpeg.wasm + rqlite + HTTP).
+#
+# Tags: the GPU images default to `latest`, exactly like the upstream deploy/docker-compose.yml
+# (which uses no tag at all). Pin them in .env when you want reproducibility:
+#   TTS_IMAGE=guiji2025/fish-speech-ziming:1.0.43
+#   GEN_VIDEO_IMAGE=guiji2025/duix.avatar:0.1.0_sdk_slim
+#   ASR_IMAGE=guiji2025/fun-asr:1.0.2
+# Note the port numbers used by the desktop docs are NOT tags - those tags do not exist.
 #
 # Data layout on the host (bind mounted, so it survives container removal):
 #   ./data/face2face/temp/   model videos, generated audio, results  -> gen-video:/code/data
@@ -20,6 +27,15 @@ services:
     image: rqlite/rqlite:8.36.2
     container_name: duix-rqlite
     restart: unless-stopped
+    # Stable raft identity. The image defaults -node-id to $(hostname), which changes every
+    # time the container is recreated; after `docker compose down` + `up` the persisted raft
+    # configuration would still hold the old voter id and the node would never become leader
+    # (503 leader not found, server crash-loops). Fixed ids and advertised addresses survive
+    # recreation, so a restart keeps the same single-node cluster.
+    environment:
+      NODE_ID: ${RQLITE_NODE_ID:-duix-rqlite}
+      HTTP_ADV_ADDR: ${RQLITE_HTTP_ADV_ADDR:-duix-rqlite:4001}
+      RAFT_ADV_ADDR: ${RQLITE_RAFT_ADV_ADDR:-duix-rqlite:4002}
     # Only needed by the server; publish it if you want to inspect the database.
     ports:
       - '127.0.0.1:${RQLITE_PORT:-4001}:4001'
@@ -83,7 +99,7 @@ services:
       - duix_net
 
   duix-tts:
-    image: ${TTS_IMAGE:-guiji2025/fish-speech-ziming:18180}
+    image: ${TTS_IMAGE:-guiji2025/fish-speech-ziming:latest}
     container_name: duix-tts
     restart: unless-stopped
     runtime: ${GPU_RUNTIME:-nvidia}
@@ -100,7 +116,7 @@ services:
       - duix_net
 
   duix-gen-video:
-    image: ${GEN_VIDEO_IMAGE:-guiji2025/duix.avatar:8383}
+    image: ${GEN_VIDEO_IMAGE:-guiji2025/duix.avatar:latest}
     container_name: duix-gen-video
     restart: unless-stopped
     runtime: ${GPU_RUNTIME:-nvidia}
@@ -122,7 +138,7 @@ services:
   # opt-in and costs no GPU memory by default:
   #   docker compose --profile asr up -d
   duix-asr:
-    image: ${ASR_IMAGE:-guiji2025/fun-asr:10095}
+    image: ${ASR_IMAGE:-guiji2025/fun-asr:latest}
     container_name: duix-asr
     restart: unless-stopped
     profiles: ['asr']

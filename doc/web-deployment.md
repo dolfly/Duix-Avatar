@@ -24,9 +24,20 @@ graph LR
 | `duix-web` | 本地构建 `duix-avatar-web` | 前端静态资源 + `/api` 反向代理 |
 | `duix-server` | 本地构建 `duix-avatar-server` | REST API、rqlite 访问、媒体存储、任务队列 |
 | `duix-rqlite` | `rqlite/rqlite:8.36.2` | 元数据（模特/作品/音色/配置），HTTP + Raft 复制 |
-| `duix-tts` | `guiji2025/fish-speech-ziming:18180` | 音色复刻 + 语音合成（上游镜像，未改动） |
-| `duix-gen-video` | `guiji2025/duix.avatar:8383` | 数字人视频合成（上游镜像，未改动） |
-| `duix-asr` | `guiji2025/fun-asr:10095` | ASR（本客户端未调用，默认不启动，见 `profiles: [asr]`） |
+| `duix-tts` | `guiji2025/fish-speech-ziming:latest` | 音色复刻 + 语音合成（上游镜像，未改动） |
+| `duix-gen-video` | `guiji2025/duix.avatar:latest` | 数字人视频合成（上游镜像，未改动） |
+| `duix-asr` | `guiji2025/fun-asr:latest` | ASR（本客户端未调用，默认不启动，见 `profiles: [asr]`） |
+
+GPU 镜像默认用 `latest`，与上游 `deploy/docker-compose.yml` 一致（它连 tag 都不写）。
+如需可复现，在 `.env` 里钉到具体版本 tag（已确认存在）：
+
+```bash
+TTS_IMAGE=guiji2025/fish-speech-ziming:1.0.43
+GEN_VIDEO_IMAGE=guiji2025/duix.avatar:0.1.0_sdk_slim
+ASR_IMAGE=guiji2025/fun-asr:1.0.2
+```
+
+> 注意：`18180` / `8383` / `10095` 是端口，不是 tag，Docker Hub 上并不存在同名的 tag。
 
 关键点：
 
@@ -46,11 +57,23 @@ graph LR
 - 磁盘：镜像约 60–70 GB；`./data` 目录建议 ≥ 100 GB（视频文件较大）
 - 浏览器：Chrome / Edge 105+ 或 Safari 16.4+（ffmpeg.wasm 需要 WebAssembly + 动态导入能力）
 
-检查 GPU 是否可用：
+检查 GPU 与 `nvidia` runtime 是否可用：
 
 ```bash
+docker info --format '{{json .Runtimes}}'   # 输出里应有 nvidia
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
+
+> **没有 GPU 的主机也能起 Web 端**：`duix-rqlite` / `duix-server` / `duix-web` 三个服务不依赖 GPU，
+> 只起这三个即可（模特管理、作品浏览可用，视频合成与音色复刻会报错）：
+>
+> ```bash
+> docker compose up -d duix-rqlite duix-server duix-web
+> ```
+>
+> 直接 `docker compose up -d` 会在启动 GPU 容器时报 `unknown or invalid runtime name: nvidia`
+> ——那不是配置错误，而是本机没有 nvidia runtime。若本机 runtime 名字不同（如 `runc`），
+> 可以改 `GPU_RUNTIME`，但容器仍会因为拿不到显卡而启动失败。
 
 ---
 
@@ -61,6 +84,17 @@ git clone https://github.com/dolfly/Duix-Avatar.git
 cd Duix-Avatar
 
 cp .env.example .env        # 可选：改端口、数据目录、镜像
+```
+
+先在 GPU 主机上验证 compose 能解析（不实际拉 60GB 镜像）：
+
+```bash
+docker compose up --dry-run    # 只打印将要执行的动作，包含镜像解析结果
+```
+
+确认无误后再起服务：
+
+```bash
 docker compose up -d        # 首次会拉取 guiji2025/* 镜像（约 60GB，耗时取决于网速）
 docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 healthy/running
 ```
@@ -95,7 +129,7 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 | `WEB_PORT` | `8080` | Web 入口端口 |
 | `SERVER_PORT` | `8280` | API 端口（仅本机绑定） |
 | `RQLITE_PORT` | `4001` | rqlite 端口（仅本机绑定） |
-| `GPU_RUNTIME` | `nvidia` | GPU 容器 runtime |
+| `GPU_RUNTIME` | `nvidia` | GPU 容器 runtime，必须是主机上已存在的 runtime 名字 |
 | `GPU_IDS` | `0` | 使用的 GPU 编号 |
 | `SHM_SIZE` | `8g` | gen-video 的共享内存 |
 | `TTS_IMAGE` / `GEN_VIDEO_IMAGE` / `ASR_IMAGE` | 上游镜像 | 改成镜像仓库/本地 tag |
@@ -105,6 +139,9 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 | `WORKER_INTERVAL_MS` | `2000` | worker 轮询间隔 |
 | `WORKER_LEASE_MS` | `120000` | 任务租约时长（多实例防重复） |
 | `RQLITE_LEVEL` | `weak` | rqlite 一致性级别：`none` / `weak` / `strong` / `all` |
+| `RQLITE_NODE_ID` | `duix-rqlite` | rqlite 节点身份。**不要改**：它被写进持久化的 Raft 配置，变了集群就选不出主 |
+| `RQLITE_HTTP_ADV_ADDR` | `duix-rqlite:4001` | rqlite 对客户端通告的 HTTP 地址 |
+| `RQLITE_RAFT_ADV_ADDR` | `duix-rqlite:4002` | rqlite 对同伴通告的 Raft 地址 |
 | `PUBLIC_BASE_URL` | 空 | 对外访问地址，仅用于生成链接/文档 |
 
 容器内部署相关（写在 compose 里，一般不用改）：
@@ -146,6 +183,13 @@ tar czf duix-data-$(date +%F).tgz ./data
 恢复：停栈 → 还原 `./data` → `docker compose up -d`。
 
 只备份元数据时用 `backup.sql`，通过 `curl -X POST http://127.0.0.1:4001/db/load -d @backup.sql` 导入。
+
+> **重启与重建**：rqlite 的节点身份是固定的（`NODE_ID=duix-rqlite` + 固定的
+> `HTTP_ADV_ADDR` / `RAFT_ADV_ADDR`），所以 `docker compose restart` 与
+> `docker compose down && docker compose up -d` 都能保持同一个单节点集群，数据不丢。
+> 如果曾经把 `NODE_ID` 改掉（或用了默认的容器 hostname），已持久化的 Raft 配置里仍是旧
+> voter id，节点会一直当 Follower（`leader: (none)`）、服务端报 `503 leader not found`；
+> 此时需要一个空的 `./data/rqlite` 重新初始化（即丢掉元数据、媒体文件可保留）。
 
 ---
 
@@ -292,6 +336,19 @@ docker pull ghcr.io/duix-avatar-server:latest
 
 - `curl http://127.0.0.1:4001/status?pretty`
 - 日志 `applying rqlite migration` 出现说明迁移已完成
+
+**`docker compose up -d` 报 `unknown or invalid runtime name: nvidia`**
+
+- 本机没有 nvidia runtime（无 GPU 或驱动/toolkit 未装），不是 compose 配置错误。
+- 只起非 GPU 服务：`docker compose up -d duix-rqlite duix-server duix-web`
+- 想先确认整条 compose 能走通（不拉 60 GB 镜像）：`docker compose up --dry-run`
+
+**rqlite 一直是 Follower / 服务端报 `503 leader not found`**
+
+- 先看 `curl http://127.0.0.1:4001/status?pretty`，`store.leader` 为空说明没选出主。
+- 最常见原因：容器重建后节点身份变了，而持久化的 Raft 配置里还是旧 voter。本仓库已把
+  `NODE_ID` / `HTTP_ADV_ADDR` / `RAFT_ADV_ADDR` 固定为 `duix-rqlite`，正常不会出现；
+  如果改过这些值，改回默认值并用空的 `./data/rqlite` 重新初始化。
 
 **想彻底重置**
 
