@@ -10,7 +10,7 @@
 ```mermaid
 graph LR
   B[浏览器<br/>Chrome / Edge / Safari] -->|HTTPS/HTTP| N[duix-web<br/>nginx<br/>静态资源 + /api 反代]
-  N -->|/api/*| S[duix-server<br/>Node 20 API]
+  N -->|/api/*| S[duix-server<br/>Node 22 API]
   S -->|/db/query /db/execute| R[(duix-rqlite<br/>元数据)]
   S -->|/v1/preprocess_and_tran<br/>/v1/invoke| T[duix-tts<br/>fish-speech]
   S -->|/easy/submit /easy/query| G[duix-gen-video<br/>duix.avatar]

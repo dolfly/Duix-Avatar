@@ -1,14 +1,14 @@
 # API server image (rqlite metadata store + media storage + GPU service orchestration).
 #
 # Build:  docker build -f deploy/server.Dockerfile -t duix-avatar-server .
-FROM node:20-bookworm-slim AS deps
+FROM node:22-bookworm-slim AS deps
 
 WORKDIR /app
 
 COPY server/package.json server/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 
 ENV NODE_ENV=production \
     PORT=8280 \
