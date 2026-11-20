@@ -130,7 +130,9 @@ export function createWebClient() {
       maximize: async () => {},
       close: async () => {},
       openLog: async () => {
-        window.open('/api/logs', '_blank', 'noopener')
+        // In the browser the log panel lives inside the app (see LogPanel.vue),
+        // so notify the UI layer instead of opening a raw JSON tab.
+        window.dispatchEvent(new CustomEvent('duix:open-log-panel'))
       }
     }
   }
