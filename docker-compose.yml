@@ -1,17 +1,17 @@
 # Duix.Avatar web stack: browser front end + API server + rqlite + the upstream GPU services.
 #
 #   cp .env.example .env      # optional: ports, data dir, image tags
-#   docker compose up -d      # first run pulls guiji2025/* images (tens of GB)
+#   docker compose up -d      # first run pulls ghcr.io/dolfly/duix-avatar-* images (tens of GB)
 #   open http://<host>:8080
 #
-# The three GPU images are the upstream ones and are unchanged; only the client layer moved
+# The GPU images come from this repo's GHCR mirror (mirrored from the upstream guiji2025/*
+# by .github/workflows/mirror-gpu.yml); only the client layer moved
 # from Electron to the browser (ffmpeg.wasm + rqlite + HTTP).
 #
-# Tags: the GPU images default to `latest`, exactly like the upstream deploy/docker-compose.yml
-# (which uses no tag at all). Pin them in .env when you want reproducibility:
-#   TTS_IMAGE=guiji2025/fish-speech-ziming:1.0.43
-#   GEN_VIDEO_IMAGE=guiji2025/duix.avatar:0.1.0_sdk_slim
-#   ASR_IMAGE=guiji2025/fun-asr:1.0.2
+# Tags: the GPU images default to `latest`. Pin them in .env when you want reproducibility:
+#   TTS_IMAGE=ghcr.io/dolfly/duix-avatar-tts:1.0.43
+#   GEN_VIDEO_IMAGE=ghcr.io/dolfly/duix-avatar-gen-video:0.1.0_sdk_slim
+#   ASR_IMAGE=ghcr.io/dolfly/duix-avatar-asr:1.0.2
 # Note the port numbers used by the desktop docs are NOT tags - those tags do not exist.
 #
 # Data layout on the host (bind mounted, so it survives container removal):
@@ -99,7 +99,7 @@ services:
       - duix_net
 
   duix-tts:
-    image: ${TTS_IMAGE:-guiji2025/fish-speech-ziming:latest}
+    image: ${TTS_IMAGE:-ghcr.io/dolfly/duix-avatar-tts:latest}
     container_name: duix-tts
     restart: unless-stopped
     runtime: ${GPU_RUNTIME:-nvidia}
@@ -116,7 +116,7 @@ services:
       - duix_net
 
   duix-gen-video:
-    image: ${GEN_VIDEO_IMAGE:-guiji2025/duix.avatar:latest}
+    image: ${GEN_VIDEO_IMAGE:-ghcr.io/dolfly/duix-avatar-gen-video:latest}
     container_name: duix-gen-video
     restart: unless-stopped
     runtime: ${GPU_RUNTIME:-nvidia}
@@ -138,7 +138,7 @@ services:
   # opt-in and costs no GPU memory by default:
   #   docker compose --profile asr up -d
   duix-asr:
-    image: ${ASR_IMAGE:-guiji2025/fun-asr:latest}
+    image: ${ASR_IMAGE:-ghcr.io/dolfly/duix-avatar-asr:latest}
     container_name: duix-asr
     restart: unless-stopped
     profiles: ['asr']

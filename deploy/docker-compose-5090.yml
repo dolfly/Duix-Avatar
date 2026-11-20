@@ -4,7 +4,7 @@ networks:
 
 services:
   duix-avatar-tts:
-    image: guiji2025/fish-speech-5090
+    image: ghcr.io/dolfly/duix-avatar-tts-5090
     container_name: duix-avatar-tts
     restart: always
     runtime: nvidia
@@ -20,7 +20,7 @@ services:
     networks:
       - ai_network
   duix-avatar-gen-video:
-    image: guiji2025/duix.avatar-5090
+    image: ghcr.io/dolfly/duix-avatar-gen-video-5090
     container_name: duix-avatar-gen-video
     restart: always
     runtime: nvidia

@@ -24,17 +24,17 @@ graph LR
 | `duix-web` | 本地构建 `duix-avatar-web` | 前端静态资源 + `/api` 反向代理 |
 | `duix-server` | 本地构建 `duix-avatar-server` | REST API、rqlite 访问、媒体存储、任务队列 |
 | `duix-rqlite` | `rqlite/rqlite:8.36.2` | 元数据（模特/作品/音色/配置），HTTP + Raft 复制 |
-| `duix-tts` | `guiji2025/fish-speech-ziming:latest` | 音色复刻 + 语音合成（上游镜像，未改动） |
-| `duix-gen-video` | `guiji2025/duix.avatar:latest` | 数字人视频合成（上游镜像，未改动） |
-| `duix-asr` | `guiji2025/fun-asr:latest` | ASR（本客户端未调用，默认不启动，见 `profiles: [asr]`） |
+| `duix-tts` | `ghcr.io/dolfly/duix-avatar-tts:latest` | 音色复刻 + 语音合成（GHCR 镜像，源自上游 guiji2025/*） |
+| `duix-gen-video` | `ghcr.io/dolfly/duix-avatar-gen-video:latest` | 数字人视频合成（GHCR 镜像，源自上游） |
+| `duix-asr` | `ghcr.io/dolfly/duix-avatar-asr:latest` | ASR（本客户端未调用，默认不启动，见 `profiles: [asr]`） |
 
-GPU 镜像默认用 `latest`，与上游 `deploy/docker-compose.yml` 一致（它连 tag 都不写）。
+GPU 镜像默认从本仓库 GHCR 镜像拉取（由 `mirror-gpu.yml` 从上游 guiji2025/* 直搬）。
 如需可复现，在 `.env` 里钉到具体版本 tag（已确认存在）：
 
 ```bash
-TTS_IMAGE=guiji2025/fish-speech-ziming:1.0.43
-GEN_VIDEO_IMAGE=guiji2025/duix.avatar:0.1.0_sdk_slim
-ASR_IMAGE=guiji2025/fun-asr:1.0.2
+TTS_IMAGE=ghcr.io/dolfly/duix-avatar-tts:1.0.43
+GEN_VIDEO_IMAGE=ghcr.io/dolfly/duix-avatar-gen-video:0.1.0_sdk_slim
+ASR_IMAGE=ghcr.io/dolfly/duix-avatar-asr:1.0.2
 ```
 
 > 注意：`18180` / `8383` / `10095` 是端口，不是 tag，Docker Hub 上并不存在同名的 tag。
@@ -95,7 +95,7 @@ docker compose up --dry-run    # 只打印将要执行的动作，包含镜像�
 确认无误后再起服务：
 
 ```bash
-docker compose up -d        # 首次会拉取 guiji2025/* 镜像（约 60GB，耗时取决于网速）
+docker compose up -d        # 首次会拉取 ghcr.io/dolfly/duix-avatar-* 镜像（约 60GB，耗时取决于网速）
 docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 healthy/running
 ```
 
@@ -296,7 +296,7 @@ cd server && npm test            # vitest：rqlite 协议、迁移、API、mp4 �
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | push / PR | 服务端测试、web 构建、Electron 构建、compose 校验 |
 | `.github/workflows/docker.yml` | push main / tag `v*` | 推送 `ghcr.io/<owner>/duix-avatar-web`、`-server` |
-| `.github/workflows/mirror-gpu.yml` | schedule（每日）/ workflow_dispatch / push main | skopeo 远端直搬 `guiji2025/*` 到 `ghcr.io/<owner>/duix-avatar-{tts,gen-video,asr}` |
+| `.github/workflows/mirror-gpu.yml` | schedule（每日）/ workflow_dispatch / push main | skopeo 远端直搬 `guiji2025/*` 到 `ghcr.io/<owner>/duix-avatar-{tts,gen-video,asr}`（含 5090 变体） |
 | `.github/workflows/release.yml` | tag `v*` | 三平台 Electron 安装包 + GitHub Release |
 
 直接使用构建好的镜像（不本地构建）：
@@ -309,20 +309,22 @@ docker pull ghcr.io/duix-avatar-server:latest
 
 ### 推理镜像的 GHCR 镜像
 
-上游三个推理镜像（`guiji2025/*`，合计约 60GB）由 Docker Hub 提供，仓库无其源码、无法重建。`mirror-gpu.yml` 用 **skopeo 远端到远端复制**把它们搬到 GHCR——不经过 runner 磁盘、不做本地 `docker pull/ tag/ push`：
+上游推理镜像（`guiji2025/*`，合计约 60GB）由 Docker Hub 提供，仓库无其源码、无法重建。`mirror-gpu.yml` 用 **skopeo 远端到远端复制**把它们搬到 GHCR——不经过 runner 磁盘、不做本地 `docker pull/ tag/ push`：
 
 | 源（Docker Hub） | GHCR 镜像 |
 | --- | --- |
 | `guiji2025/fish-speech-ziming` | `ghcr.io/<owner>/duix-avatar-tts` |
 | `guiji2025/duix.avatar` | `ghcr.io/<owner>/duix-avatar-gen-video` |
 | `guiji2025/fun-asr` | `ghcr.io/<owner>/duix-avatar-asr` |
+| `guiji2025/fish-speech-5090` | `ghcr.io/<owner>/duix-avatar-tts-5090` |
+| `guiji2025/duix.avatar-5090` | `ghcr.io/<owner>/duix-avatar-gen-video-5090` |
 
-默认搬运 `latest` 和三个钉定版本（`1.0.43` / `0.1.0_sdk_slim` / `1.0.2`）；新增/更新版本时在 workflow 的 matrix 里补一行即可。要改用 GHCR 镜像，在 `.env` 里覆盖：
+默认搬运 `latest` 和钉定版本（`1.0.43` / `0.0.7` / `0.1.0_sdk_slim` / `1.0.2`）；新增/更新版本时在 workflow 的 matrix 里补一行即可。当前 compose 默认即用 GHCR 镜像；要改用上游 Docker Hub 直拉，在 `.env` 里覆盖：
 
 ```bash
-TTS_IMAGE=ghcr.io/dolfly/duix-avatar-tts:latest
-GEN_VIDEO_IMAGE=ghcr.io/dolfly/duix-avatar-gen-video:latest
-ASR_IMAGE=ghcr.io/dolfly/duix-avatar-asr:latest
+TTS_IMAGE=guiji2025/fish-speech-ziming:latest
+GEN_VIDEO_IMAGE=guiji2025/duix.avatar:latest
+ASR_IMAGE=guiji2025/fun-asr:latest
 ```
 
 ---

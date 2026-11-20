@@ -127,9 +127,9 @@ Duix.Avatar是一款专为Windows系统设计的全离线视频合成工具，�
 
 1. Nodejs 18
 2. Docker Image
-   - docker pull guiji2025/fun-asr
-   - docker pull guiji2025/fish-speech-ziming
-   - docker pull guiji2025/duix.avatar
+   - docker pull ghcr.io/dolfly/duix-avatar-asr
+   - docker pull ghcr.io/dolfly/duix-avatar-tts
+   - docker pull ghcr.io/dolfly/duix-avatar-gen-video
 
 ## Windows 安装
 
@@ -320,7 +320,7 @@ docker compose up -d          # rqlite + server + web + TTS + gen-video
 
 1. 将视频分离为静音视频 + 音频
 2. 音频放到`D:\duix_avatar_data\voice\data`下
-   > `D:\duix_avatar_data\voice\data`是与`guiji2025/fish-speech-ziming`服务约定的，可以在docker-compose中修改
+   > `D:\duix_avatar_data\voice\data`是与`ghcr.io/dolfly/duix-avatar-tts`服务约定的，可以在docker-compose中修改
 3. 调用`http://127.0.0.1:18180/v1/preprocess_and_tran`接口
    > 参数示例：
    >

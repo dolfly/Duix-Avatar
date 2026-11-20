@@ -56,9 +56,9 @@ Duix.Avatar support two deployment modes：Windows / Ubuntu 22.04 Installation
 
 1. Nodejs 18
 2. Docker Images
-   - docker pull guiji2025/fun-asr
-   - docker pull guiji2025/fish-speech-ziming
-   - docker pull guiji2025/duix.avatar
+   - docker pull ghcr.io/dolfly/duix-avatar-asr
+   - docker pull ghcr.io/dolfly/duix-avatar-tts
+   - docker pull ghcr.io/dolfly/duix-avatar-gen-video
 
 
 
@@ -251,7 +251,7 @@ For specific code, refer to:
 1. Separate video into silent video + audio
 2. Place audio in
 
-    `D:\duix_avatar_data\voice\data` is agreed with the `guiji2025/fish-speech-ziming` service, can be modified in docker-compose
+    `D:\duix_avatar_data\voice\data` is agreed with the `ghcr.io/dolfly/duix-avatar-tts` service, can be modified in docker-compose
 
 3. Call the
 
