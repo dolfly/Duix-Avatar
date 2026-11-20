@@ -4,8 +4,9 @@ name: Docker
 #   ghcr.io/<owner>/duix-avatar-web
 #   ghcr.io/<owner>/duix-avatar-server
 #
-# The three GPU images (guiji2025/*) are third-party and are only pulled by compose -
-# this workflow never rebuilds or mirrors them.
+# The three GPU images (guiji2025/*) are third-party and mirrored to GHCR by
+# .github/workflows/mirror-gpu.yml (skopeo remote-to-remote); this workflow never
+# rebuilds them.
 on:
   push:
     branches: [main]

@@ -294,8 +294,9 @@ cd server && npm test            # vitest：rqlite 协议、迁移、API、mp4 �
 
 | 工作流 | 触发 | 产物 |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | push / PR | 服务端测试、web 构建、Electron 构建 |
+| `.github/workflows/ci.yml` | push / PR | 服务端测试、web 构建、Electron 构建、compose 校验 |
 | `.github/workflows/docker.yml` | push main / tag `v*` | 推送 `ghcr.io/<owner>/duix-avatar-web`、`-server` |
+| `.github/workflows/mirror-gpu.yml` | schedule（每日）/ workflow_dispatch / push main | skopeo 远端直搬 `guiji2025/*` 到 `ghcr.io/<owner>/duix-avatar-{tts,gen-video,asr}` |
 | `.github/workflows/release.yml` | tag `v*` | 三平台 Electron 安装包 + GitHub Release |
 
 直接使用构建好的镜像（不本地构建）：
@@ -306,7 +307,23 @@ docker pull ghcr.io/duix-avatar-server:latest
 # 把 docker-compose.yml 里 duix-web / duix-server 的 build: 段换成 image: 即可
 ```
 
-上游三个推理镜像（`guiji2025/*`）由 Docker Hub 提供，compose 直接拉取，CI 不重建。
+### 推理镜像的 GHCR 镜像
+
+上游三个推理镜像（`guiji2025/*`，合计约 60GB）由 Docker Hub 提供，仓库无其源码、无法重建。`mirror-gpu.yml` 用 **skopeo 远端到远端复制**把它们搬到 GHCR——不经过 runner 磁盘、不做本地 `docker pull/ tag/ push`：
+
+| 源（Docker Hub） | GHCR 镜像 |
+| --- | --- |
+| `guiji2025/fish-speech-ziming` | `ghcr.io/<owner>/duix-avatar-tts` |
+| `guiji2025/duix.avatar` | `ghcr.io/<owner>/duix-avatar-gen-video` |
+| `guiji2025/fun-asr` | `ghcr.io/<owner>/duix-avatar-asr` |
+
+默认搬运 `latest` 和三个钉定版本（`1.0.43` / `0.1.0_sdk_slim` / `1.0.2`）；新增/更新版本时在 workflow 的 matrix 里补一行即可。要改用 GHCR 镜像，在 `.env` 里覆盖：
+
+```bash
+TTS_IMAGE=ghcr.io/dolfly/duix-avatar-tts:latest
+GEN_VIDEO_IMAGE=ghcr.io/dolfly/duix-avatar-gen-video:latest
+ASR_IMAGE=ghcr.io/dolfly/duix-avatar-asr:latest
+```
 
 ---
 

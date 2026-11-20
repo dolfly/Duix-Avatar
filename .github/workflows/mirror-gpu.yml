@@ -1,0 +1,72 @@
+name: Mirror GPU images
+
+# Copies the three third-party GPU inference images from Docker Hub to GHCR
+# using skopeo remote-to-remote copy. No local `docker pull`/`tag`/`push` — the
+# images are ~60GB total and are never materialized on the runner's disk.
+
+on:
+  # Periodically keep the mirror in sync with the upstream (new/re-tagged versions).
+  schedule:
+    - cron: '17 3 * * *'
+  # Manual re-mirror (e.g. to pick up a newly pinned version immediately).
+  workflow_dispatch:
+  # Re-mirror on every main merge so the pinned/consumed set stays current.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mirror:
+    name: mirror
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # One entry per (source image -> target name, mirrored tag).
+      # Add a row here to mirror a version; everything referenced by compose,
+      # .env.example and docs must be listed so the mirror stays complete.
+      matrix:
+        include:
+          - src: guiji2025/fish-speech-ziming
+            dst: duix-avatar-tts
+            tag: latest
+          - src: guiji2025/fish-speech-ziming
+            dst: duix-avatar-tts
+            tag: 1.0.43
+          - src: guiji2025/duix.avatar
+            dst: duix-avatar-gen-video
+            tag: latest
+          - src: guiji2025/duix.avatar
+            dst: duix-avatar-gen-video
+            tag: 0.1.0_sdk_slim
+          - src: guiji2025/fun-asr
+            dst: duix-avatar-asr
+            tag: latest
+          - src: guiji2025/fun-asr
+            dst: duix-avatar-asr
+            tag: 1.0.2
+    steps:
+      - name: Install skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mirror ${{ matrix.src }}:${{ matrix.tag }}
+        run: |
+          set -euo pipefail
+          # skopeo picks up the GHCR credentials from ~/.docker/config.json that
+          # docker/login-action wrote above. --all copies the manifest and every
+          # referenced blob/layer; skopeo streams blobs straight between the two
+          # registries without landing them on the runner's disk.
+          skopeo copy --all \
+            "docker://${{ matrix.src }}:${{ matrix.tag }}" \
+            "docker://ghcr.io/${{ github.repository_owner }}/${{ matrix.dst }}:${{ matrix.tag }}"
