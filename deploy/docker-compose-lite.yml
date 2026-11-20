@@ -4,7 +4,7 @@ networks:
 
 services:
   duix-avatar-gen-video:
-    image: guiji2025/duix.avatar
+    image: ghcr.io/dolfly/duix-avatar-gen-video
     container_name: duix-avatar-gen-video
     restart: always
     runtime: nvidia

@@ -1,6 +1,6 @@
 name: Mirror GPU images
 
-# Copies the three third-party GPU inference images from Docker Hub to GHCR
+# Copies the third-party GPU inference images from Docker Hub to GHCR
 # using skopeo remote-to-remote copy. No local `docker pull`/`tag`/`push` — the
 # images are ~60GB total and are never materialized on the runner's disk.
 
@@ -47,6 +47,18 @@ jobs:
           - src: guiji2025/fun-asr
             dst: duix-avatar-asr
             tag: 1.0.2
+          - src: guiji2025/fish-speech-5090
+            dst: duix-avatar-tts-5090
+            tag: latest
+          - src: guiji2025/fish-speech-5090
+            dst: duix-avatar-tts-5090
+            tag: 0.0.7
+          - src: guiji2025/duix.avatar-5090
+            dst: duix-avatar-gen-video-5090
+            tag: latest
+          - src: guiji2025/duix.avatar-5090
+            dst: duix-avatar-gen-video-5090
+            tag: 0.1.0_sdk_slim
     steps:
       - name: Install skopeo
         run: |
