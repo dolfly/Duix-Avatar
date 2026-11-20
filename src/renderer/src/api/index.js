@@ -51,7 +51,7 @@ const httpApi = {
 
   removeVideo: (id) => http(`/api/videos/${id}`, { method: 'DELETE' }),
 
-  saveVideo: (video) => {
+  saveVideo: async (video) => {
     const audio = video.audio_path
     const hasFile = typeof Blob !== 'undefined' && audio instanceof Blob
     const body = {
@@ -62,14 +62,22 @@ const httpApi = {
       voice_id: video.voice_id
     }
 
-    if (!hasFile) return http('/api/videos', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) })
+    let result
+    if (!hasFile) {
+      result = await http('/api/videos', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) })
+    } else {
+      const form = new FormData()
+      Object.entries(body).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') form.append(key, String(value))
+      })
+      form.append('audio', audio, audio.name || 'audio.wav')
+      result = await http('/api/videos', { method: 'POST', body: form })
+    }
 
-    const form = new FormData()
-    Object.entries(body).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && value !== '') form.append(key, String(value))
-    })
-    form.append('audio', audio, audio.name || 'audio.wav')
-    return http('/api/videos', { method: 'POST', body: form })
+    // Match the contract of `addModel` / `makeVideo` / `countVideo`: return the
+    // numeric id, not the response body object. Previously this leaked `{ id: N }`,
+    // which surfaced as `/api/videos/[object Object]/make` on the next step.
+    return result ? result.id : false
   },
 
   makeVideo: async (id) => {
