@@ -87,6 +87,18 @@ let ctx
 let workerA
 let workerB
 
+const AUTH = { username: 'admin', password: 's3cret' }
+let authToken = ''
+
+// Protected routes require a bearer token now; this helper keeps the existing tests
+// readable while attaching the token obtained in beforeEach.
+const authed = {
+  get: (url) => request(ctx.app).get(url).set('Authorization', `Bearer ${authToken}`),
+  post: (url) => request(ctx.app).post(url).set('Authorization', `Bearer ${authToken}`),
+  patch: (url) => request(ctx.app).patch(url).set('Authorization', `Bearer ${authToken}`),
+  delete: (url) => request(ctx.app).delete(url).set('Authorization', `Bearer ${authToken}`)
+}
+
 beforeAll(async () => {
   tts = await startTtsStub()
   f2f = await startF2fStub()
@@ -113,10 +125,15 @@ beforeEach(async () => {
       DATA_DIR: dataDir,
       TTS_BASE_URL: tts.baseUrl,
       FACE2FACE_BASE_URL: `${f2f.baseUrl}/easy`,
-      WORKER_ENABLED: 'false'
+      WORKER_ENABLED: 'false',
+      AUTH_USERNAME: AUTH.username,
+      AUTH_PASSWORD: AUTH.password
     }
   })
   await migrate(store, SILENT)
+
+  const login = await request(ctx.app).post('/api/auth/login').send(AUTH)
+  authToken = login.body.token
 
   workerA = createVideoWorker({ videoDao: ctx.daos.video, videoService: ctx.services.video, log: SILENT, leaseMs: 60000 })
   workerB = createVideoWorker({ videoDao: ctx.daos.video, videoService: ctx.services.video, log: SILENT, leaseMs: 60000 })
@@ -133,7 +150,7 @@ afterEach(() => {
 })
 
 async function createModel(name = '模特A') {
-  const response = await request(ctx.app)
+  const response = await authed
     .post('/api/models')
     .field('name', name)
     .attach('video', Buffer.from('fake-mp4'), { filename: 'raw.mp4', contentType: 'video/mp4' })
@@ -151,28 +168,72 @@ describe('GET /api/health', () => {
   })
 })
 
+describe('auth', () => {
+  it('logs in with correct credentials and returns a token', async () => {
+    const response = await request(ctx.app).post('/api/auth/login').send(AUTH)
+    expect(response.status).toBe(200)
+    expect(response.body.token).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('rejects wrong credentials with the same 401 shape (no account enumeration)', async () => {
+    const wrongPassword = await request(ctx.app)
+      .post('/api/auth/login')
+      .send({ username: AUTH.username, password: 'wrong-password' })
+    const wrongUsername = await request(ctx.app)
+      .post('/api/auth/login')
+      .send({ username: 'nobody', password: AUTH.password })
+
+    expect(wrongPassword.status).toBe(401)
+    expect(wrongUsername.status).toBe(401)
+    expect(wrongPassword.body).toEqual(wrongUsername.body)
+  })
+
+  it('rejects missing fields with 400', async () => {
+    const response = await request(ctx.app).post('/api/auth/login').send({})
+    expect(response.status).toBe(400)
+  })
+
+  it('rejects protected routes without a token', async () => {
+    await expect(request(ctx.app).get('/api/videos')).resolves.toMatchObject({ status: 401 })
+    await expect(request(ctx.app).post('/api/videos').send({ name: 'x' })).resolves.toMatchObject({ status: 401 })
+  })
+
+  it('rejects an invalid token', async () => {
+    await expect(
+      request(ctx.app).get('/api/videos').set('Authorization', 'Bearer deadbeef')
+    ).resolves.toMatchObject({ status: 401 })
+  })
+
+  it('does not create records on unauthenticated writes', async () => {
+    const response = await request(ctx.app).post('/api/videos').send({ modelId: 1, name: 'x', textContent: 'y' })
+    expect(response.status).toBe(401)
+    const rows = await store.query('SELECT * FROM video')
+    expect(rows).toHaveLength(0)
+  })
+})
+
 describe('context API', () => {
   it('creates and updates a key', async () => {
-    await expect(request(ctx.app).get('/api/context/appearance')).resolves.toMatchObject({ status: 404 })
+    await expect(authed.get('/api/context/appearance')).resolves.toMatchObject({ status: 404 })
 
-    const created = await request(ctx.app).post('/api/context').send({ key: 'appearance', val: '#101010' })
+    const created = await authed.post('/api/context').send({ key: 'appearance', val: '#101010' })
     expect(created.status).toBe(200)
 
-    const updated = await request(ctx.app).post('/api/context').send({ key: 'appearance', val: '#ffffff' })
+    const updated = await authed.post('/api/context').send({ key: 'appearance', val: '#ffffff' })
     expect(updated.status).toBe(200)
 
     const rows = await store.query('SELECT * FROM context WHERE key = ?', ['appearance'])
     expect(rows).toHaveLength(1)
     expect(rows[0].val).toBe('#ffffff')
 
-    const read = await request(ctx.app).get('/api/context/appearance')
+    const read = await authed.get('/api/context/appearance')
     expect(read.body).toMatchObject({ key: 'appearance', val: '#ffffff' })
   })
 
   it('lists every key', async () => {
-    await request(ctx.app).post('/api/context').send({ key: 'a', val: '1' })
-    await request(ctx.app).post('/api/context').send({ key: 'b', val: '2' })
-    const response = await request(ctx.app).get('/api/context')
+    await authed.post('/api/context').send({ key: 'a', val: '1' })
+    await authed.post('/api/context').send({ key: 'b', val: '2' })
+    const response = await authed.get('/api/context')
     expect(response.body.list.map((row) => row.key).sort()).toEqual(['a', 'b', 'db_version'])
   })
 })
@@ -191,7 +252,7 @@ describe('model API', () => {
     )
     expect(ttsState.preprocess).toMatchObject({ format: 'wav', lang: 'zh' })
 
-    const videoResponse = await request(ctx.app).get(model.video_path)
+    const videoResponse = await authed.get(model.video_path)
     expect(videoResponse.status).toBe(200)
     expect(videoResponse.headers['content-type']).toMatch(/video\/mp4/)
   })
@@ -200,11 +261,11 @@ describe('model API', () => {
     await createModel('张三')
     await createModel('李四')
 
-    const page = await request(ctx.app).get('/api/models?page=1&pageSize=1')
+    const page = await authed.get('/api/models?page=1&pageSize=1')
     expect(page.body.total).toBe(2)
     expect(page.body.list).toHaveLength(1)
 
-    const filtered = await request(ctx.app).get('/api/models?name=张')
+    const filtered = await authed.get('/api/models?name=张')
     expect(filtered.body.total).toBe(1)
     expect(filtered.body.list[0].name).toBe('张三')
   })
@@ -213,13 +274,13 @@ describe('model API', () => {
     const id = await createModel()
     const model = await ctx.services.model.find(id)
 
-    const response = await request(ctx.app).delete(`/api/models/${id}`)
+    const response = await authed.delete(`/api/models/${id}`)
     expect(response.status).toBe(200)
     expect(fs.existsSync(path.join(dataDir, 'face2face', model.video_file))).toBe(false)
   })
 
   it('rejects requests without the required fields', async () => {
-    const response = await request(ctx.app).post('/api/models').field('name', 'x')
+    const response = await authed.post('/api/models').field('name', 'x')
     expect(response.status).toBe(400)
     expect(response.body.message).toMatch(/缺少/)
   })
@@ -237,7 +298,13 @@ describe('model API', () => {
       const failing = buildContext({
         store,
         logger: SILENT,
-        env: { DATA_DIR: dataDir, TTS_BASE_URL: stub.baseUrl, WORKER_ENABLED: 'false' }
+        env: {
+          DATA_DIR: dataDir,
+          TTS_BASE_URL: stub.baseUrl,
+          WORKER_ENABLED: 'false',
+          AUTH_USERNAME: AUTH.username,
+          AUTH_PASSWORD: AUTH.password
+        }
       })
       await expect(failing.services.model.add({
         name: 'bad',
@@ -254,7 +321,7 @@ describe('model API', () => {
 describe('video API', () => {
   async function createDraft(overrides = {}) {
     const modelId = await createModel()
-    const response = await request(ctx.app)
+    const response = await authed
       .post('/api/videos')
       .send({ modelId, name: '作品A', textContent: '你好世界', ...overrides })
     expect(response.status).toBe(201)
@@ -267,32 +334,32 @@ describe('video API', () => {
     const draft = await ctx.services.video.find(id)
     expect(draft).toMatchObject({ name: '作品A', status: 'draft', text_content: '你好世界', progress: 0 })
 
-    const queued = await request(ctx.app).post(`/api/videos/${id}/make`)
+    const queued = await authed.post(`/api/videos/${id}/make`)
     expect(queued.status).toBe(200)
     expect((await ctx.services.video.find(id)).status).toBe('waiting')
   })
 
   it('patches editable fields', async () => {
     const id = await createDraft()
-    const response = await request(ctx.app).patch(`/api/videos/${id}`).send({ name: '改名', textContent: '新的文案' })
+    const response = await authed.patch(`/api/videos/${id}`).send({ name: '改名', textContent: '新的文案' })
     expect(response.status).toBe(200)
     expect(response.body).toMatchObject({ name: '改名', text_content: '新的文案' })
   })
 
   it('deletes a draft', async () => {
     const id = await createDraft()
-    await expect(request(ctx.app).delete(`/api/videos/${id}`)).resolves.toMatchObject({ status: 200 })
-    await expect(request(ctx.app).get(`/api/videos/${id}`)).resolves.toMatchObject({ status: 404 })
+    await expect(authed.delete(`/api/videos/${id}`)).resolves.toMatchObject({ status: 200 })
+    await expect(authed.get(`/api/videos/${id}`)).resolves.toMatchObject({ status: 404 })
   })
 
   it('reports 404 for unknown ids', async () => {
-    await expect(request(ctx.app).get('/api/videos/999')).resolves.toMatchObject({ status: 404 })
-    await expect(request(ctx.app).post('/api/videos/999/make')).resolves.toMatchObject({ status: 200 })
+    await expect(authed.get('/api/videos/999')).resolves.toMatchObject({ status: 404 })
+    await expect(authed.post('/api/videos/999/make')).resolves.toMatchObject({ status: 200 })
   })
 
   it('synthesises a video through the GPU stubs and reports progress', async () => {
     const id = await createDraft({ voiceId: 1 })
-    await request(ctx.app).post(`/api/videos/${id}/make`)
+    await authed.post(`/api/videos/${id}/make`)
 
     await workerA.runOnce()
 
@@ -317,18 +384,18 @@ describe('video API', () => {
     expect(done.status).toBe('success')
     expect(done.file_path).toMatch(/^\/api\/files\/temp\/result\.mp4$/)
 
-    const download = await request(ctx.app).get(done.file_path)
+    const download = await authed.get(done.file_path)
     expect(download.status).toBe(200)
     expect(download.body.toString()).toBe('fake-result')
 
-    const exported = await request(ctx.app).get(`/api/videos/${id}/export`)
+    const exported = await authed.get(`/api/videos/${id}/export`)
     expect(exported.status).toBe(200)
     expect(exported.headers['content-disposition']).toMatch(/attachment/)
   })
 
   it('marks the video failed when the GPU service rejects it', async () => {
     const id = await createDraft({ voiceId: 1 })
-    await request(ctx.app).post(`/api/videos/${id}/make`)
+    await authed.post(`/api/videos/${id}/make`)
     f2fState.submitResponse = { code: 10001, msg: '参数错误' }
     await workerA.runOnce()
 
@@ -339,7 +406,7 @@ describe('video API', () => {
 
   it('marks the video failed when the GPU task fails', async () => {
     const id = await createDraft({ voiceId: 1 })
-    await request(ctx.app).post(`/api/videos/${id}/make`)
+    await authed.post(`/api/videos/${id}/make`)
     await workerA.runOnce()
 
     f2fState.queryResponse = { code: 10002, msg: '任务失败' }
@@ -349,7 +416,7 @@ describe('video API', () => {
 
   it('lets only one instance synthesise the same task', async () => {
     const id = await createDraft({ voiceId: 1 })
-    await request(ctx.app).post(`/api/videos/${id}/make`)
+    await authed.post(`/api/videos/${id}/make`)
 
     await Promise.all([workerA.runOnce(), workerB.runOnce()])
 
@@ -360,11 +427,11 @@ describe('video API', () => {
 
   it('fails a queued video when its model was deleted', async () => {
     const modelId = await createModel()
-    const response = await request(ctx.app).post('/api/videos').send({ modelId, name: '无模特', textContent: 'x' })
+    const response = await authed.post('/api/videos').send({ modelId, name: '无模特', textContent: 'x' })
     const id = response.body.id
-    await request(ctx.app).delete(`/api/models/${modelId}`)
+    await authed.delete(`/api/models/${modelId}`)
 
-    await request(ctx.app).post(`/api/videos/${id}/make`)
+    await authed.post(`/api/videos/${id}/make`)
     await workerA.runOnce()
 
     const video = await ctx.services.video.find(id)
@@ -377,7 +444,7 @@ describe('video id validation', () => {
   it('rejects invalid ids on POST /api/videos without inserting', async () => {
     const modelId = await createModel()
     for (const bad of ['abc', {}, 0, -1, null]) {
-      const response = await request(ctx.app)
+      const response = await authed
         .post('/api/videos')
         .send({ id: bad, modelId, name: '作品', textContent: '文案' })
       expect(response.status).toBe(400)
@@ -390,7 +457,7 @@ describe('video id validation', () => {
   it('treats an empty-string id as create and a numeric id as update', async () => {
     const modelId = await createModel()
 
-    const created = await request(ctx.app)
+    const created = await authed
       .post('/api/videos')
       .send({ id: '', modelId, name: '作品A', textContent: '文案' })
     expect(created.status).toBe(201)
@@ -400,7 +467,7 @@ describe('video id validation', () => {
 
     // Re-POSTing with the returned id must update the same row, never insert a
     // second one (the old code turned a malformed id into a fresh draft).
-    const updated = await request(ctx.app)
+    const updated = await authed
       .post('/api/videos')
       .send({ id, modelId, name: '作品A改', textContent: '新文案' })
     expect(updated.status).toBe(200)
@@ -422,14 +489,14 @@ describe('video id validation', () => {
 describe('voice API', () => {
   it('previews the reference audio of a cloned voice', async () => {
     await createModel()
-    const response = await request(ctx.app).get('/api/voices/1/preview')
+    const response = await authed.get('/api/voices/1/preview')
     expect(response.status).toBe(200)
     expect(response.headers['content-type']).toMatch(/audio/)
   })
 
   it('auditions text with a cloned voice', async () => {
     await createModel()
-    const response = await request(ctx.app).post('/api/voices/1/audition').send({ text: '试听一下' })
+    const response = await authed.post('/api/voices/1/audition').send({ text: '试听一下' })
     expect(response.status).toBe(200)
     expect(response.body.audioPath).toMatch(/^\/api\/files\/temp\/.+\.wav$/)
     expect(fs.existsSync(path.join(dataDir, 'face2face', 'temp', response.body.fileName))).toBe(true)
@@ -437,7 +504,7 @@ describe('voice API', () => {
 
   it('rejects audition requests without text', async () => {
     await createModel()
-    await expect(request(ctx.app).post('/api/voices/1/audition').send({})).resolves.toMatchObject({ status: 400 })
+    await expect(authed.post('/api/voices/1/audition').send({})).resolves.toMatchObject({ status: 400 })
   })
 })
 
@@ -445,13 +512,13 @@ describe('media routes', () => {
   it('serves range requests for video scrubbing', async () => {
     const id = await createModel()
     const model = await ctx.services.model.find(id)
-    const response = await request(ctx.app).get(model.video_path).set('Range', 'bytes=0-3')
+    const response = await authed.get(model.video_path).set('Range', 'bytes=0-3')
     expect(response.status).toBe(206)
     expect(response.headers['content-range']).toMatch(/^bytes 0-3\//)
   })
 
   it('refuses path traversal', async () => {
-    const response = await request(ctx.app).get('/api/files/%2e%2e/package.json')
+    const response = await authed.get('/api/files/%2e%2e/package.json')
     expect(response.status).toBe(404)
   })
 })

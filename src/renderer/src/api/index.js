@@ -12,6 +12,7 @@
  * - `exportVideo` streams the file into a browser download.
  */
 import { isDesktop } from '@renderer/client'
+import { clearToken, getToken } from '@renderer/utils/auth.js'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -19,8 +20,22 @@ function ipcRenderer() {
   return window.electron.ipcRenderer
 }
 
-async function http(url, options = {}) {
-  const response = await fetch(url, options)
+function authHeaders(extra) {
+  const headers = new Headers(extra || {})
+  const token = getToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  return headers
+}
+
+function redirectToLoginIfUnauthorized(response, url) {
+  if (response.status !== 401) return
+  if (String(url).includes('/api/auth/login')) return
+  clearToken()
+  if (window.location.hash !== '#/login') window.location.hash = '#/login'
+}
+
+export async function http(url, options = {}) {
+  const response = await fetch(url, { ...options, headers: authHeaders(options.headers) })
   const text = await response.text()
   let data = null
   try {
@@ -28,6 +43,7 @@ async function http(url, options = {}) {
   } catch {
     data = text
   }
+  redirectToLoginIfUnauthorized(response, url)
   if (!response.ok) {
     throw new Error((data && data.message) || text || `请求失败 (${response.status})`)
   }
@@ -86,7 +102,9 @@ const httpApi = {
   },
 
   exportVideo: async (id, fileName = 'duix-avatar.mp4') => {
-    const response = await fetch(`/api/videos/${id}/export`)
+    const exportUrl = `/api/videos/${id}/export`
+    const response = await fetch(exportUrl, { headers: authHeaders() })
+    redirectToLoginIfUnauthorized(response, exportUrl)
     if (!response.ok) throw new Error(`导出失败 (${response.status})`)
     const blob = await response.blob()
     const url = URL.createObjectURL(blob)

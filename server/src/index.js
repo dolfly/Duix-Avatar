@@ -10,6 +10,7 @@ import { createFace2faceClient, createTtsClient } from './integrations/clients.j
 import { createContextService, createModelService, createVideoService, createVoiceService } from './services/index.js'
 import { createVideoWorker } from './services/worker.js'
 import { createApp } from './routes/index.js'
+import { createAuthService } from './auth.js'
 
 /**
  * Wire configuration, stores, services and the http app together.
@@ -58,9 +59,14 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
       })
     : null
 
-  const app = createApp({ services, media, config, logger: log, worker, rqlite })
+  const auth = createAuthService({
+    username: config.auth.username,
+    passwordHash: config.auth.passwordHash
+  })
 
-  return { config, log, media, rqlite, daos, services, worker, app }
+  const app = createApp({ services, media, config, logger: log, worker, rqlite, auth })
+
+  return { config, log, media, rqlite, daos, services, worker, auth, app }
 }
 
 async function main() {
