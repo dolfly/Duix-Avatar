@@ -61,8 +61,11 @@ export function loadConfig(env = process.env) {
     tts: {
       baseUrl: ttsBaseUrl,
       timeoutMs: int(env.TTS_TIMEOUT_MS, 15 * 60 * 1000),
-      // Path prefix the TTS container sees for DATA_DIR/voice/data (its /code/data mount).
-      remoteDataRoot: normalizeBaseUrl(env.TTS_REMOTE_DATA_ROOT, '/code/data')
+      // Path prefix the server sends to the TTS service in `reference_audio`. The TTS
+      // image prepends its own media_path `/code/data`, so this must be a leading-slash
+      // path RELATIVE to that root. Default `/` -> `/origin_audio/x.wav` -> the image
+      // resolves `/code/data/origin_audio/x.wav`. `/code/data` here would double-prefix.
+      remoteDataRoot: normalizeBaseUrl(env.TTS_REMOTE_DATA_ROOT, '/')
     },
     face2face: {
       baseUrl: face2faceBaseUrl,

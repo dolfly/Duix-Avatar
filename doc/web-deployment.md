@@ -26,7 +26,7 @@ graph LR
 | `duix-rqlite` | `rqlite/rqlite:8.36.2` | 元数据（模特/作品/音色/配置），HTTP + Raft 复制 |
 | `duix-tts` | `ghcr.io/dolfly/duix-avatar-tts:latest` | 音色复刻 + 语音合成（GHCR 镜像，源自上游 guiji2025/*） |
 | `duix-gen-video` | `ghcr.io/dolfly/duix-avatar-gen-video:latest` | 数字人视频合成（GHCR 镜像，源自上游） |
-| `duix-asr` | `ghcr.io/dolfly/duix-avatar-asr:latest` | ASR（本客户端未调用，默认不启动，见 `profiles: [asr]`） |
+| `duix-asr` | `ghcr.io/dolfly/duix-avatar-asr:latest` | ASR（音色复刻依赖它：TTS 镜像 `is_local=True` 总是连 FunASR，默认随栈启动） |
 
 GPU 镜像默认从本仓库 GHCR 镜像拉取（由 `mirror-gpu.yml` 从上游 guiji2025/* 直搬）。
 如需可复现，在 `.env` 里钉到具体版本 tag（已确认存在）：
@@ -79,12 +79,21 @@ docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 
 ## 3. 一键部署
 
+> **用哪个 compose**：根目录的 `docker-compose.yml` 是**当前推荐**的 Web 全栈（web + server +
+> rqlite + GPU 服务）。`deploy/docker-compose*.yml` 是早期桌面/GPU-only 变体（Windows 盘符、
+> 只起 GPU 服务、无 web/server），仍保留但只做 `privileged`/GPU 选择的同步修正，不作为新部署
+> 的入口。
+
 ```bash
 git clone https://github.com/dolfly/Duix-Avatar.git
 cd Duix-Avatar
 
-cp .env.example .env        # 可选：改端口、数据目录、镜像
+cp .env.example .env        # 必填：AUTH_USERNAME + AUTH_PASSWORD_HASH（登录凭据）；其余端口/数据目录/镜像可选
 ```
+
+> **登录凭据是硬启动依赖**：`duix-server` 缺 `AUTH_USERNAME` 与口令时直接拒绝启动。
+> 先把 `.env` 里的 `AUTH_USERNAME` / `AUTH_PASSWORD_HASH`（或 `AUTH_PASSWORD`）填好再 `up`，
+> 否则 `duix-server` 会 fail-fast（日志报 `Web 鉴权未配置`）。哈希生成命令见下文「Web 登录鉴权」。
 
 先在 GPU 主机上验证 compose 能解析（不实际拉 60GB 镜像）：
 
@@ -113,7 +122,7 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 | `duix-rqlite` | `4001`（仅 `127.0.0.1`） | rqlite HTTP，排查/备份用 |
 | `duix-tts` | `18180`（仅 `127.0.0.1`） | 上游 TTS |
 | `duix-gen-video` | `8383`（仅 `127.0.0.1`） | 上游合成服务 |
-| `duix-asr` | `10095`（仅 `127.0.0.1`） | 需 `--profile asr` 才启动 |
+| `duix-asr` | `10095`（仅 `127.0.0.1`） | 随默认栈启动（音色复刻依赖） |
 
 所有端口可在 `.env` 中修改（`WEB_PORT` / `SERVER_PORT` / …）。
 
@@ -130,7 +139,10 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 | `SERVER_PORT` | `8280` | API 端口（仅本机绑定） |
 | `RQLITE_PORT` | `4001` | rqlite 端口（仅本机绑定） |
 | `GPU_RUNTIME` | `nvidia` | GPU 容器 runtime，必须是主机上已存在的 runtime 名字 |
-| `GPU_IDS` | `0` | 使用的 GPU 编号 |
+| `GPU_IDS` | `0` | 使用的 GPU 编号（多卡时选支持模型的卡，见「多卡 / 非首选 GPU」） |
+| `AUTH_USERNAME` | 空（必填） | 登录账号 |
+| `AUTH_PASSWORD_HASH` | 空（二选一） | scrypt 哈希，格式 `scrypt$N$r$p$saltHex$hashHex`；`$` 需写成 `$$` |
+| `AUTH_PASSWORD` | 空（二选一） | 明文替代项，启动时哈希、不落库 |
 | `SHM_SIZE` | `8g` | gen-video 的共享内存 |
 | `TTS_IMAGE` / `GEN_VIDEO_IMAGE` / `ASR_IMAGE` | 上游镜像 | 改成镜像仓库/本地 tag |
 | `IMAGE_TAG` | `latest` | 本地构建的 web/server 镜像 tag |
@@ -151,12 +163,56 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 | `RQLITE_URL` | `http://duix-rqlite:4001` | rqlite 地址 |
 | `TTS_BASE_URL` | `http://duix-tts:8080` | TTS 地址 |
 | `FACE2FACE_BASE_URL` | `http://duix-gen-video:8383/easy` | 合成服务地址（注意 `/easy` 前缀） |
-| `TTS_REMOTE_DATA_ROOT` | `/code/data` | TTS 容器内看到的数据根 |
+| `TTS_REMOTE_DATA_ROOT` | `/` | TTS 容器内路径前缀（**相对前缀**，不能写成 `/code/data`，见下） |
 | `FACE2FACE_REMOTE_DATA_ROOT` | `/code/data` | 合成容器内看到的数据根 |
 
 > `TTS_REMOTE_DATA_ROOT` / `FACE2FACE_REMOTE_DATA_ROOT` 决定服务端传给 GPU 服务的路径前缀。
-> 因为 compose 把 `./data/voice/data` 挂到 TTS 的 `/code/data`、把 `./data/face2face` 挂到
-> 合成服务的 `/code/data`，所以两者都是 `/code/data`。改成别的挂载方式时必须同步修改。
+> **TTS 侧是相对前缀**：上游 TTS 镜像 `views_guiji.py` 会自己再拼一次 `config.media_path = /code/data`，
+> 所以这里必须是 `/`（服务端发出 `/origin_audio/x.wav`，镜像内变成 `/code/data/origin_audio/x.wav`）。
+> 写成 `/code/data` 会得到 `/code/data/code/data/...`，每次音色复刻都 `file not exists`。
+> **合成侧没有二次拼接**：gen-video 直接使用传入的 `/code/data/temp/...`，所以保持 `/code/data` 不动。
+
+### Web 登录鉴权（DO-84）
+
+浏览器部署强制登录：`duix-server` 缺凭据时**拒绝启动**（fail-fast），不会静默开放。
+
+- 登录接口：`POST /api/auth/login`（用户名 + 口令，返回 opaque token）。
+- 凭据：`.env` 里 `AUTH_USERNAME` + `AUTH_PASSWORD_HASH`（或明文 `AUTH_PASSWORD`，二选一）。
+- **口令值由部署方决定，绝不写进仓库**（`.env` 已被 gitignore）。
+
+**生成口令哈希**（`server/` 是 `type: module`）：
+
+```bash
+cd server && node -e "import('./src/auth.js').then(m=>console.log(m.hashPassword('你的口令')))"
+# 输出形如：scrypt$16384$8$1$<saltHex>$<hashHex>
+```
+
+⚠️ **compose 会把 `$xxx` 当变量插值**，哈希里的 `$` 分隔符必须写成 `$$` 才能进 `.env`。
+直接给上面的输出再加一层转义（推荐，避免手改）：
+
+```bash
+cd server && node -e "import('./src/auth.js').then(m=>console.log(m.hashPassword('你的口令').split('\$').join('\$\$')))"
+```
+
+把这条输出整行粘到 `.env` 的 `AUTH_PASSWORD_HASH=` 后面即可。明文 `AUTH_PASSWORD` 含 `$` 时同样要写 `$$`。
+
+**公开端点（鉴权豁免，属有意取舍）**：
+
+| 路径 | 为什么公开 |
+| --- | --- |
+| `GET /api/health` | 给监控/探活用，探活不受鉴权影响 |
+| `GET /api/files/*` | 媒体被 `<video>`/`<img>`/`<audio>` 直引，带不了 Authorization 头 |
+
+其余 `/api/*` 全部要求 `Authorization: Bearer <token>`，缺失/失效返回 401，前端自动跳登录页。
+
+### 多卡 / 非首选 GPU
+
+GPU 容器**不再使用 `privileged`**，`NVIDIA_VISIBLE_DEVICES`（即 `GPU_IDS`）真正生效，多卡机不会再把任务塞到错误的卡上。
+
+- 多卡主机上把 `GPU_IDS` 指到**支持模型的那张卡**。例如 CT131 上 `K1200`（sm_52）不支持 BF16，
+  gen-video 用它会报 `cudaErrorNoKernelImageForDevice`、任务卡在 20%，所以现场用 `GPU_IDS=1`（P4000）。
+- `GPU_IDS` 支持逗号列表（如 `0,1`），透传给 `NVIDIA_VISIBLE_DEVICES`。
+- 显存：TTS + gen-video + ASR 三卡共用一张 GPU 时会较紧张，按需只起需要的服务。
 
 ---
 
@@ -171,6 +227,13 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 ├── uploads/                # 上传暂存（可随时清理）
 └── rqlite/                 # rqlite 的 Raft 日志与快照（元数据）
 ```
+
+> **TTS 的 `asr_fun.py` 覆盖（DO-86 已收进项目）**：根 compose 会把仓库里的
+> `deploy/patches/asr_fun.py` 只读挂载到 `duix-tts` 的 `/code/asr_fun.py`，把上游镜像内
+> `rcg.close(timeout=3)` 提到 `30`（慢卡如 P4000 回读 10–16s 参考音频要 6s+，3s 会丢转写、
+> 复刻报 `asr failed`）。**这是对上游镜像内文件的覆盖**：升级 `TTS_IMAGE` tag 后要重新核对
+> `/code/asr_fun.py` 是否仍一致；部署目录里必须存在 `deploy/patches/asr_fun.py`
+>（与 `docker-compose.yml` 同目录的相对路径），否则 bind mount 会落成空目录。
 
 备份：
 
