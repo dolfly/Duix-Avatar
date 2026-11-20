@@ -214,6 +214,13 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
    * stored file relative to the media root.
    */
   async function save({ id, modelId, name, textContent, voiceId, audio, audioPath }) {
+    // Defense in depth: the route already rejects malformed ids, but the service
+    // must never turn one into a silent insert either. `undefined` means "create",
+    // anything else has to be a positive integer.
+    if (id !== undefined && !(Number.isInteger(id) && id > 0)) {
+      throw httpError(400, '无效的视频 ID')
+    }
+
     media.ensureDirs()
 
     let storedAudio = audioPath || null

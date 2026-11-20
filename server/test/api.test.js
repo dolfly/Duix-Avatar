@@ -373,6 +373,52 @@ describe('video API', () => {
   })
 })
 
+describe('video id validation', () => {
+  it('rejects invalid ids on POST /api/videos without inserting', async () => {
+    const modelId = await createModel()
+    for (const bad of ['abc', {}, 0, -1, null]) {
+      const response = await request(ctx.app)
+        .post('/api/videos')
+        .send({ id: bad, modelId, name: '作品', textContent: '文案' })
+      expect(response.status).toBe(400)
+      expect(response.body.message).toMatch(/无效的视频 ID/)
+    }
+    const rows = await store.query('SELECT * FROM video')
+    expect(rows).toHaveLength(0)
+  })
+
+  it('treats an empty-string id as create and a numeric id as update', async () => {
+    const modelId = await createModel()
+
+    const created = await request(ctx.app)
+      .post('/api/videos')
+      .send({ id: '', modelId, name: '作品A', textContent: '文案' })
+    expect(created.status).toBe(201)
+    const id = created.body.id
+    expect(Number.isInteger(id)).toBe(true)
+    expect(id).toBeGreaterThan(0)
+
+    // Re-POSTing with the returned id must update the same row, never insert a
+    // second one (the old code turned a malformed id into a fresh draft).
+    const updated = await request(ctx.app)
+      .post('/api/videos')
+      .send({ id, modelId, name: '作品A改', textContent: '新文案' })
+    expect(updated.status).toBe(200)
+    expect(updated.body.id).toBe(id)
+
+    const rows = await store.query('SELECT * FROM video')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].name).toBe('作品A改')
+    expect(rows[0].text_content).toBe('新文案')
+  })
+
+  it('rejects invalid ids at the service layer too', async () => {
+    await expect(ctx.services.video.save({ id: 0, name: 'x' })).rejects.toThrow(/无效的视频 ID/)
+    await expect(ctx.services.video.save({ id: NaN, name: 'x' })).rejects.toThrow(/无效的视频 ID/)
+    await expect(ctx.services.video.save({ id: {}, name: 'x' })).rejects.toThrow(/无效的视频 ID/)
+  })
+})
+
 describe('voice API', () => {
   it('previews the reference audio of a cloned voice', async () => {
     await createModel()

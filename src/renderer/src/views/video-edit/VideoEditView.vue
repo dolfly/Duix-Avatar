@@ -61,6 +61,17 @@ const state = reactive({
   }
 })
 
+/**
+ * Coerce a video id to a positive integer, or null when it is not usable.
+ * Tolerates the `{ id: N }` shape so a stale response body can never leak
+ * into the `make` request URL again.
+ */
+function normalizeVideoId(value) {
+  const raw = typeof value === 'object' && value !== null ? value.id : value
+  const id = Number(raw)
+  return Number.isFinite(id) && id > 0 ? id : null
+}
+
 const action = {
   async init() {
     state.initLoading = true
@@ -200,11 +211,22 @@ const action = {
       text_content: select.text,
       ...sumitAudio
     })
-    return video.id || saveId
+    // Prefer the existing id when updating; otherwise use the id the server just
+    // returned. Both are normalised to a positive integer so `make` never receives
+    // an object (which used to produce `/api/videos/[object Object]/make`).
+    const id = normalizeVideoId(video.id) ?? normalizeVideoId(saveId)
+    if (id === null) {
+      throw new Error('保存失败：未返回有效的视频 ID')
+    }
+    return id
   },
   async make(videoId) {
-    const makeId = await makeVideo(videoId)
-    return makeId == videoId
+    const id = normalizeVideoId(videoId)
+    if (id === null) {
+      throw new Error('合成失败：无效的视频 ID')
+    }
+    const makeId = await makeVideo(id)
+    return makeId == id
   }
 }
 

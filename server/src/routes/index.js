@@ -283,8 +283,14 @@ function createVideoRouter(videoService, upload, media) {
   // requests, so express.json() parses those afterwards.
   router.post('/', upload.single('audio'), express.json(), h(async (req, res) => {
     const body = req.body || {}
-    const id = await videoService.save({
-      id: body.id ? Number(body.id) : undefined,
+    const parsedId = parseVideoId(body.id)
+    if (parsedId.invalid) {
+      res.status(400).json({ code: 400, message: '无效的视频 ID' })
+      return
+    }
+    const id = parsedId.id
+    const savedId = await videoService.save({
+      id,
       modelId: toNumberOrNull(body.modelId ?? body.model_id),
       name: body.name,
       textContent: body.textContent ?? body.text_content ?? '',
@@ -292,7 +298,7 @@ function createVideoRouter(videoService, upload, media) {
       audio: req.file,
       audioPath: body.audioPath ?? body.audio_path
     })
-    res.status(body.id ? 200 : 201).json({ id })
+    res.status(id ? 200 : 201).json({ id: savedId })
   }))
 
   router.patch('/:id', express.json(), h(async (req, res) => {
@@ -412,6 +418,32 @@ function createVoiceRouter(voiceService) {
 function toNumberOrNull(value) {
   const parsed = Number.parseInt(value, 10)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+/**
+ * Parse the `id` field of `POST /api/videos`.
+ *
+ * - `undefined` or `''` → create a new record (the web client sends `id: ''` for
+ *   brand-new drafts).
+ * - a positive integer (number, or numeric string) → update that record.
+ * - anything else (`null`, `0`, negatives, `{}`, `"abc"`, `NaN`) → `{ invalid: true }`;
+ *   the caller must answer 400 rather than silently inserting a new row — that was
+ *   how every invalid id used to become a fresh draft.
+ */
+function parseVideoId(value) {
+  if (value === undefined || value === '') return {}
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value > 0 ? { id: value } : { invalid: true }
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (trimmed === '') return {}
+    if (/^\d+$/.test(trimmed)) {
+      const parsed = Number(trimmed)
+      return Number.isInteger(parsed) && parsed > 0 ? { id: parsed } : { invalid: true }
+    }
+  }
+  return { invalid: true }
 }
 
 function errorHandler(log) {
