@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # API server: rqlite client, DAO/services/routes and the mp4 duration parser.
+  server:
+    name: server tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Test
+        run: npm test
+
+  # Browser build of the renderer (same sources as the Electron app, web target).
+  web:
+    name: web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build
+        run: npm run build:web
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: dist/web
+          retention-days: 7
+
+  # Electron client (unchanged desktop distribution).
+  client:
+    name: client build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload out
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-out
+          path: out
+          retention-days: 7
+
+  # docker-compose.yml must stay parseable: a broken interpolation or a service name typo
+  # is invisible to every other job but breaks `docker compose up -d` on the user's host.
+  compose:
+    name: compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate compose
+        run: docker compose --profile asr config --quiet
+
+      - name: Print resolved services
+        run: docker compose config --services
+
+      # Every image the stack pulls must actually exist in its registry. A wrong tag only
+      # surfaces as `docker compose up -d` failing on the user's machine, so check it here.
+      # The two duix-avatar-* images are built from this repo, so they are skipped.
+      - name: Referenced images resolve
+        run: |
+          set -euo pipefail
+          images=$(docker compose --profile asr config --images | grep -v '^duix-avatar-' || true)
+          echo "checking remote images:"
+          echo "$images"
+          for img in $images; do
+            ok=0
+            for attempt in 1 2 3; do
+              if docker manifest inspect "$img" >/dev/null 2>&1; then ok=1; break; fi
+              sleep 5
+            done
+            if [ "$ok" != 1 ]; then
+              echo "::error::image does not exist in its registry: $img"
+              exit 1
+            fi
+          done

@@ -19,7 +19,7 @@
             <div class="line"></div>
           </div>
         </li>
-        <div @click="debug">debug</div>
+        <div v-if="isDesktop" @click="debug">debug</div>
       </div>
       <div class="list-data">
         <WorksList v-show="state.tabValue === 'worksList'" />
@@ -35,6 +35,7 @@ import MyModelList from "@renderer/views/home/components/myModelList.vue";
 import { reactive, onMounted, watch, ref } from "vue";
 import { useHomeStore } from "@renderer/stores/home.js";
 import { countVideo, countModel } from "@renderer/api/index.js";
+import { isDesktop } from "@renderer/client";
 import { useRoute } from "vue-router";
 import { useI18n } from 'vue-i18n'
 const { t, locale } = useI18n()
@@ -91,6 +92,7 @@ const submitOKFun = () => {
   }
 };
 const debug = () => {
+  if (!isDesktop) return;
   window.electron.ipcRenderer.send("open-devtools");
 };
 const tabClick = (index) => {

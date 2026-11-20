@@ -214,6 +214,26 @@ docker-compose -f docker-compose-linux.yml up -d
 
 Reminder: In the Ubuntu system, if you enter the desktop as the `root` user, directly double - clicking `Duix.Avatar - x.x.x.AppImage` may not work. You need to execute `./Duix.Avatar - x.x.x.AppImage --no - sandbox` in the command - line terminal. Adding the `--no - sandbox` parameter will do the trick.
 
+### Mode 3：Web deployment (browser, no Electron)
+
+The same renderer and the same GPU services, served over HTTP: a static web front end
+(nginx) + an API server + [rqlite](https://github.com/rqlite/rqlite) for metadata. No ffmpeg
+binary is installed - audio/video conversion happens in the browser with ffmpeg.wasm.
+
+```bash
+git clone https://github.com/dolfly/Duix-Avatar.git
+cd Duix-Avatar
+docker compose up -d          # rqlite + server + web + TTS + gen-video
+# open http://<server-ip>:8080 in any browser
+```
+
+Desktop features (model cloning, voice cloning, text/audio driven video generation, works
+management) work unchanged in the browser. Multiple browser sessions can share one server,
+and the video queue is safe to run on several server instances at once.
+
+See [doc/web-deployment.md](doc/web-deployment.md) for the full guide: environment variables,
+backup, multi-instance deployment and troubleshooting.
+
 
 
 ## 4. Open APIs

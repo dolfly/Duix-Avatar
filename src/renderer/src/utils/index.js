@@ -1,4 +1,5 @@
 import dayjs from 'dayjs'
+import { isDesktop } from '@renderer/client'
 export const handleShowMenu = (path) => {
   const MenuList = ['/video/edit', '/login']
   if (MenuList.find((item) => path.includes(item))) {
@@ -14,16 +15,33 @@ export const wait = (time = 0) => {
   })
 }
 
+const blobUrls = new WeakMap()
+
+/**
+ * Turn whatever the app stores in `video_path` / `audio_path` / `file_path` into a
+ * URL an <img>/<video>/<audio> element can load.
+ *
+ * - Electron build: an absolute filesystem path becomes `file://…` (unchanged).
+ * - Web build: `/api/...` paths, absolute URLs and object URLs are used as-is; a
+ *   selected File/Blob is mapped to a stable object URL.
+ */
 export const localUrl = {
   addFileProtocol(url) {
-    if(url && !url.startsWith('file:')){
-      return `file://${url}`.replaceAll('\\', "\/")
+    if (!url) return url
+
+    if (typeof Blob !== 'undefined' && url instanceof Blob) {
+      if (!blobUrls.has(url)) blobUrls.set(url, URL.createObjectURL(url))
+      return blobUrls.get(url)
     }
-    return url
+
+    const value = String(url)
+    if (value.startsWith('file:')) return value
+    if (!isDesktop) return value
+    return `file://${value.replaceAll('\\', '/')}`
   },
 
   delFileProtocol(url) {
-    return url && url.replace('file://', '')
+    return url && String(url).replace('file://', '')
   }
 }
 
