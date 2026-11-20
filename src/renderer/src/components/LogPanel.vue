@@ -40,6 +40,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { formatDate } from '@renderer/utils/index.js'
+import { http } from '@renderer/api/index.js'
 
 const OPEN_EVENT = 'duix:open-log-panel'
 const REFRESH_INTERVAL = 5000
@@ -56,24 +57,9 @@ function formatTime(value) {
   return formatDate(value, 'YYYY-MM-DD HH:mm:ss')
 }
 
-async function fetchLogs() {
-  const response = await fetch('/api/logs?limit=200')
-  const text = await response.text()
-  let data = null
-  try {
-    data = text ? JSON.parse(text) : null
-  } catch {
-    data = text
-  }
-  if (!response.ok) {
-    throw new Error((data && data.message) || text || `请求失败 (${response.status})`)
-  }
-  return data
-}
-
 async function refresh() {
   try {
-    const data = await fetchLogs()
+    const data = await http('/api/logs?limit=200')
     logs.value = Array.isArray(data && data.list) ? data.list : []
     error.value = ''
     scrollToBottom()

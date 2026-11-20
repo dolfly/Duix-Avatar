@@ -76,7 +76,7 @@ export function createUploads(dir, { maxFileBytes } = {}) {
  * @param {object} [deps.worker] video worker
  * @param {object} [deps.rqlite] rqlite client (health only)
  */
-export function createApp({ services, media, config, logger, worker, rqlite }) {
+export function createApp({ services, media, config, logger, worker, rqlite, auth }) {
   const app = express()
   app.disable('x-powered-by')
 
@@ -92,6 +92,25 @@ export function createApp({ services, media, config, logger, worker, rqlite }) {
 
   app.use('/api', express.json({ limit: JSON_LIMIT }))
 
+  // Login: the only way to obtain a token. Public by definition.
+  app.post(
+    '/api/auth/login',
+    h(async (req, res) => {
+      const { username, password } = req.body || {}
+      if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
+        res.status(400).json({ code: 400, message: '用户名和密码不能为空' })
+        return
+      }
+      const token = auth.login(username, password)
+      if (!token) {
+        res.status(401).json({ code: 401, message: '用户名或密码错误' })
+        return
+      }
+      res.json({ token })
+    })
+  )
+
+  // Health is left open for monitoring/liveness probes.
   app.get(
     '/api/health',
     h(async (req, res) => {
@@ -112,25 +131,9 @@ export function createApp({ services, media, config, logger, worker, rqlite }) {
     })
   )
 
-  app.get('/api/logs', (req, res) => {
-    res.json({ list: log.tail(parseIntParam(req.query.limit, 200, { min: 1, max: 1000 })) })
-  })
-
-  app.get('/api/config', (req, res) => {
-    res.json({
-      name: 'Duix.Avatar',
-      worker: Boolean(worker?.running),
-      maxUploadMb: Math.round(config.upload.maxFileBytes / 1024 / 1024)
-    })
-  })
-
-  app.use('/api/context', createContextRouter(services.context))
-  app.use('/api/models', createModelRouter(services.model, upload))
-  app.use('/api/videos', createVideoRouter(services.video, upload, media))
-  app.use('/api/voices', createVoiceRouter(services.voice))
-
-  // Media files (model videos, generated audio and video). Range requests are enabled so
-  // the browser can scrub the <video> preview.
+  // Media files (model videos, generated audio and video) are referenced directly by
+  // <video>/<img>/<audio> tags, which cannot send Authorization headers, so they stay
+  // public. Range requests are enabled so the browser can scrub the <video> preview.
   app.use(
     '/api/files',
     express.static(media.face2faceRoot, {
@@ -148,6 +151,26 @@ export function createApp({ services, media, config, logger, worker, rqlite }) {
       }
     })
   )
+
+  // Everything else under /api requires a valid bearer token.
+  app.use('/api', requireAuth(auth))
+
+  app.get('/api/logs', (req, res) => {
+    res.json({ list: log.tail(parseIntParam(req.query.limit, 200, { min: 1, max: 1000 })) })
+  })
+
+  app.get('/api/config', (req, res) => {
+    res.json({
+      name: 'Duix.Avatar',
+      worker: Boolean(worker?.running),
+      maxUploadMb: Math.round(config.upload.maxFileBytes / 1024 / 1024)
+    })
+  })
+
+  app.use('/api/context', createContextRouter(services.context))
+  app.use('/api/models', createModelRouter(services.model, upload))
+  app.use('/api/videos', createVideoRouter(services.video, upload, media))
+  app.use('/api/voices', createVoiceRouter(services.voice))
 
   app.use('/api', (req, res) => {
     res.status(404).json({ code: 404, message: `接口不存在: ${req.method} ${req.originalUrl}` })
@@ -444,6 +467,23 @@ function parseVideoId(value) {
     }
   }
   return { invalid: true }
+}
+
+function requireAuth(auth) {
+  return (req, res, next) => {
+    const token = extractBearerToken(req)
+    if (!token || !auth.verify(token)) {
+      res.status(401).json({ code: 401, message: '未登录或令牌已失效' })
+      return
+    }
+    next()
+  }
+}
+
+function extractBearerToken(req) {
+  const header = req.headers.authorization || ''
+  const match = /^Bearer\s+(.+)$/i.exec(header)
+  return match ? match[1].trim() : ''
 }
 
 function errorHandler(log) {

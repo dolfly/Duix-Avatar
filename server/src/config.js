@@ -1,5 +1,7 @@
 import path from 'node:path'
 
+import { hashPassword } from './auth.js'
+
 function int(value, fallback) {
   const parsed = Number.parseInt(value ?? '', 10)
   return Number.isFinite(parsed) ? parsed : fallback
@@ -20,6 +22,20 @@ export function normalizeBaseUrl(value, fallback) {
 
 export function loadConfig(env = process.env) {
   const dataDir = path.resolve(env.DATA_DIR || path.join(process.cwd(), 'data'))
+
+  // Web auth. The browser deployment requires a login, so refuse to start without
+  // credentials (fail fast) rather than silently serving an unprotected API.
+  // AUTH_PASSWORD_HASH (a pre-computed scrypt hash) is preferred; AUTH_PASSWORD
+  // (plaintext) is hashed here at startup for convenience. Only the hash is kept.
+  const authUsername = env.AUTH_USERNAME || ''
+  const authPasswordHash = env.AUTH_PASSWORD_HASH || ''
+  const authPassword = env.AUTH_PASSWORD || ''
+  if (!authUsername || (!authPasswordHash && !authPassword)) {
+    throw new Error(
+      'Web 鉴权未配置：请设置 AUTH_USERNAME 与 AUTH_PASSWORD_HASH（或 AUTH_PASSWORD）。' +
+        ' 浏览器部署要求登录后才能访问，拒绝在无凭据的情况下静默启动。'
+    )
+  }
 
   const face2faceBaseUrl = normalizeBaseUrl(env.FACE2FACE_BASE_URL, 'http://127.0.0.1:8383/easy')
   const ttsBaseUrl = normalizeBaseUrl(env.TTS_BASE_URL, 'http://127.0.0.1:18180')
@@ -62,6 +78,10 @@ export function loadConfig(env = process.env) {
       // A claimed task is leased for this long before another instance may retry it.
       leaseMs: int(env.WORKER_LEASE_MS, 120000),
       pollTimeoutMs: int(env.FACE2FACE_TIMEOUT_MS, 60 * 1000)
+    },
+    auth: {
+      username: authUsername,
+      passwordHash: authPasswordHash || hashPassword(authPassword)
     }
   }
 }
