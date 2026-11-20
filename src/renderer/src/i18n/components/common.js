@@ -141,6 +141,14 @@ export const commonZh = {
     languageSwitch: {
       languageEnText: '英文',
       languageZhText: '中文'
+    },
+    logPanel: {
+      title: '日志',
+      total: '共 {count} 条',
+      refresh: '刷新',
+      close: '关闭',
+      empty: '暂无日志',
+      loadFailed: '日志加载失败'
     }
   }
 }
@@ -282,6 +290,14 @@ export const commonEn = {
     languageSwitch: {
       languageEnText: 'English',
       languageZhText: 'Chinese'
+    },
+    logPanel: {
+      title: 'Logs',
+      total: '{count} entries',
+      refresh: 'Refresh',
+      close: 'Close',
+      empty: 'No logs yet',
+      loadFailed: 'Failed to load logs'
     }
   }
 }

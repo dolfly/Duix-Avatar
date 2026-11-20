@@ -3,6 +3,7 @@ import MenuLIst from '@renderer/components/menuLIst.vue'
 import { handleShowMenu } from '@renderer/utils/index.js'
 import AppHeader from '@renderer/components/AppHeader.vue'
 import Agreement from '@renderer/components/agreement.vue'
+import LogPanel from '@renderer/components/LogPanel.vue'
 import { watch, ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useHomeStore } from '@renderer/stores/home.js'
@@ -66,6 +67,7 @@ const getContextAjax = async () => {
       </router-view>
     </div>
     <Agreement v-model="home.homeState.agreementVisible" />
+    <LogPanel />
   </div>
 </template>
 <style lang="less" scoped>
