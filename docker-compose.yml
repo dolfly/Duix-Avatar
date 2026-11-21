@@ -155,25 +155,26 @@ services:
   # Upstream's ASR image. Voice cloning (POST /api/models -> TTS /v1/preprocess_and_tran)
   # depends on this service: the TTS image's config.py hardcodes is_local = True and ignores
   # need_asr, so it always dials the FunASR websocket. It therefore starts with the default
-  # stack (no profile) and is reachable by the aliases below.
+  # stack (no profile) and is reachable by the alias below.
   duix-asr:
     image: ${ASR_IMAGE:-ghcr.io/dolfly/duix-avatar-asr:latest}
     container_name: duix-asr
     restart: unless-stopped
     runtime: ${GPU_RUNTIME:-nvidia}
     working_dir: /workspace/FunASR/runtime
+    environment:
+      # Same GPU filtering as duix-tts/duix-gen-video: on multi-GPU hosts pick the card that
+      # supports the models; without it the nvidia runtime defaults to all cards.
+      - NVIDIA_VISIBLE_DEVICES=${GPU_IDS:-0}
     command: sh /run.sh
     ports:
       - '127.0.0.1:${ASR_PORT:-10095}:10095'
     networks:
       duix_net:
-        # The TTS image's config.py hardcodes `fun_asr_host = 'heygem-asr'` (upstream
-        # HeyGem service name); the legacy compose variants used `duix-avatar-asr`. Both
-        # aliases are registered so the TTS -> ASR websocket resolves regardless of the
-        # image tag. Voice cloning depends on this service, so it is no longer behind a
-        # profile and starts with the default stack.
+        # The TTS image's config.py hardcodes `fun_asr_host = 'duix-avatar-asr'`, which is
+        # not this service's name (`duix-asr`), so register that alias for the TTS -> ASR
+        # websocket to resolve.
         aliases:
-          - heygem-asr
           - duix-avatar-asr
 
 networks:
