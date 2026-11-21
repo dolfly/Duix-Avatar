@@ -20,14 +20,18 @@
         >
       </div>
       <t-dropdown
-        v-if="state.username"
+        v-if="state.username || isDesktop"
         :maxColumnWidth="false"
         :min-column-width="120"
         placement="bottom-right"
         @click="action.clickHandler"
       >
-        <div class="header-right-item header-avatar">
+        <div v-if="state.username" class="header-right-item header-avatar">
           <t-avatar class="header-avatar__img" :alt="state.username">{{ avatarChar }}</t-avatar>
+        </div>
+        <div v-else class="header-right-item" style="width: 70px">
+          <img src="@renderer/assets/images/icons/setting.svg" alt="setting" />
+          <div class="header-right-item-text">{{ $t('common.setting.title') }}</div>
         </div>
         <t-dropdown-menu>
           <t-dropdown-item
@@ -218,6 +222,17 @@ const saveContextAjax = async (lang) => {
       img {
         width: 20px;
         height: 20px;
+      }
+
+      &-text {
+        font-family:
+          PingFang SC,
+          PingFang SC;
+        font-weight: 400;
+        font-size: 12px;
+        color: #000000;
+        line-height: 14px;
+        text-align: left;
       }
     }
   }
