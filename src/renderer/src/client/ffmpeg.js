@@ -37,11 +37,13 @@ async function exists(url) {
 }
 
 async function coreUrls() {
-  if (await exists(`${LOCAL_CORE_BASE}/ffmpeg-core.js`)) {
-    return {
-      coreURL: `${LOCAL_CORE_BASE}/ffmpeg-core.js`,
-      wasmURL: `${LOCAL_CORE_BASE}/ffmpeg-core.wasm`
-    }
+  // Local URLs carry the core version as a cache-busting query so that, when the
+  // vendored core is updated, browsers and CDN caches (nginx serves them as
+  // `immutable`) that hold the old build stop reusing it.
+  const localCoreURL = `${LOCAL_CORE_BASE}/ffmpeg-core.js?v=${CORE_VERSION}`
+  const localWasmURL = `${LOCAL_CORE_BASE}/ffmpeg-core.wasm?v=${CORE_VERSION}`
+  if (await exists(localCoreURL)) {
+    return { coreURL: localCoreURL, wasmURL: localWasmURL }
   }
   return {
     coreURL: await toBlobURL(`${CDN_CORE_BASE}/ffmpeg-core.js`, 'text/javascript'),
