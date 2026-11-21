@@ -55,6 +55,29 @@ async function isCoreDir(dir) {
   }
 }
 
+/**
+ * The local core URLs in `ffmpeg.js` must carry the core version as a `?v=`
+ * cache-busting query. nginx serves them as `immutable`, and a CDN (EdgeOne)
+ * would otherwise keep feeding old browsers the previously cached core for up to
+ * a year — so a fix that only swaps the vendored file would never reach users
+ * who already loaded the old build. Fail the build if the version param is gone.
+ */
+async function assertVersionedCoreUrl() {
+  const ffmpegJs = path.join(rootDir, 'src', 'renderer', 'src', 'client', 'ffmpeg.js')
+  const src = await readFile(ffmpegJs, 'utf8')
+  for (const needle of [
+    'ffmpeg-core.js?v=${CORE_VERSION}',
+    'ffmpeg-core.wasm?v=${CORE_VERSION}'
+  ]) {
+    if (!src.includes(needle)) {
+      throw new Error(
+        `src/renderer/src/client/ffmpeg.js 的本地 core URL 必须带版本参数（缺少 "${needle}"），不要去掉 ?v=`
+      )
+    }
+  }
+}
+
+await assertVersionedCoreUrl()
 const srcDir = await resolveCoreDir()
 await mkdir(outDir, { recursive: true })
 
