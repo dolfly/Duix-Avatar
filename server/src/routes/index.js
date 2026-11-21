@@ -235,6 +235,18 @@ function createModelRouter(modelService, upload) {
     })
   )
 
+  router.post(
+    '/batch-delete',
+    h(async (req, res) => {
+      const parsed = parseIds(req.body?.ids)
+      if (parsed.invalid) {
+        res.status(400).json({ code: 400, message: 'ids 必须是非空的正整数数组' })
+        return
+      }
+      res.json(await modelService.batchRemove(parsed.ids))
+    })
+  )
+
   router.get(
     '/:id',
     h(async (req, res) => {
@@ -294,6 +306,18 @@ function createVideoRouter(videoService, upload, media) {
     '/count',
     h(async (req, res) => {
       res.json({ count: await videoService.count(req.query.name || '') })
+    })
+  )
+
+  router.post(
+    '/batch-delete',
+    h(async (req, res) => {
+      const parsed = parseIds(req.body?.ids)
+      if (parsed.invalid) {
+        res.status(400).json({ code: 400, message: 'ids 必须是非空的正整数数组' })
+        return
+      }
+      res.json(await videoService.batchRemove(parsed.ids))
     })
   )
 
@@ -454,6 +478,23 @@ function createVoiceRouter(voiceService, auditionService) {
 function toNumberOrNull(value) {
   const parsed = Number.parseInt(value, 10)
   return Number.isFinite(parsed) ? parsed : null
+}
+
+/**
+ * Validate the `ids` body of a batch-delete request: a non-empty array of positive
+ * integers. Malformed input is rejected as a whole (400) so the service never guesses
+ * which entries the caller meant; ids that are well-formed but absent from the store
+ * are handled per-id by the service and returned in `failed`.
+ */
+function parseIds(value) {
+  if (!Array.isArray(value) || value.length === 0) return { invalid: true }
+  const ids = []
+  for (const item of value) {
+    const id = Number(item)
+    if (!Number.isInteger(id) || id <= 0) return { invalid: true }
+    ids.push(id)
+  }
+  return { ids }
 }
 
 /**

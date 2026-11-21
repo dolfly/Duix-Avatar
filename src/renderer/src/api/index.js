@@ -78,6 +78,13 @@ const httpApi = {
 
   removeVideo: (id) => http(`/api/videos/${id}`, { method: 'DELETE' }),
 
+  removeVideos: (ids) =>
+    http('/api/videos/batch-delete', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ ids })
+    }),
+
   saveVideo: async (video) => {
     const audio = video.audio_path
     const hasFile = typeof Blob !== 'undefined' && audio instanceof Blob
@@ -172,6 +179,13 @@ const httpApi = {
 
   removeModel: (id) => http(`/api/models/${id}`, { method: 'DELETE' }),
 
+  removeModels: (ids) =>
+    http('/api/models/batch-delete', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ ids })
+    }),
+
   getContext: (key) => http(`/api/context/${encodeURIComponent(key)}`),
 
   saveContext: (key, val) =>
@@ -197,10 +211,25 @@ const httpApi = {
   }
 }
 
+async function batchRemoveOverIpc(channel, ids) {
+  const deleted = []
+  const failed = []
+  for (const id of ids || []) {
+    try {
+      await ipcRenderer().invoke(channel, id)
+      deleted.push(id)
+    } catch (error) {
+      failed.push({ id, message: error?.message || '删除失败' })
+    }
+  }
+  return { deleted, failed }
+}
+
 const ipcApi = {
   videoPage: ({ page = 1, pageSize = 1, name = '' }) => ipcRenderer().invoke('video/page', { page, pageSize, name }),
   findVideo: (id) => ipcRenderer().invoke('video/find', id),
   removeVideo: (id) => ipcRenderer().invoke('video/remove', id),
+  removeVideos: async (ids) => batchRemoveOverIpc('video/remove', ids),
   saveVideo: (video) => ipcRenderer().invoke('video/save', video),
   makeVideo: (id) => ipcRenderer().invoke('video/make', id),
   exportVideo: (id, outputPath) => ipcRenderer().invoke('video/export', id, outputPath),
@@ -212,6 +241,7 @@ const ipcApi = {
   addModel: ({ name, videoPath }) => ipcRenderer().invoke('model/addModel', name, videoPath),
   countModel: (name = '') => ipcRenderer().invoke('model/count', name),
   removeModel: (id) => ipcRenderer().invoke('model/remove', id),
+  removeModels: async (ids) => batchRemoveOverIpc('model/remove', ids),
 
   getContext: (key) => ipcRenderer().invoke('context/get', key),
   saveContext: (key, val) => ipcRenderer().invoke('context/save', key, val),
@@ -226,6 +256,7 @@ const api = isDesktop ? ipcApi : httpApi
 export const videoPage = api.videoPage
 export const findVideo = api.findVideo
 export const removeVideo = api.removeVideo
+export const removeVideos = api.removeVideos
 export const saveVideo = api.saveVideo
 export const makeVideo = api.makeVideo
 export const exportVideo = api.exportVideo
@@ -237,6 +268,7 @@ export const findModel = api.findModel
 export const addModel = api.addModel
 export const countModel = api.countModel
 export const removeModel = api.removeModel
+export const removeModels = api.removeModels
 
 export const getContext = api.getContext
 export const saveContext = api.saveContext

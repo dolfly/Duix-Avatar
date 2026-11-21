@@ -45,6 +45,9 @@ export const commonZh = {
     draftsText: '草稿',
     underProduction: '正在制作中，请耐心等待',
     queuing: '排队中，请耐心等待',
+    statusWaitingText: '排队中',
+    statusPendingText: '制作中',
+    statusSuccessText: '制作成功',
     emptyText: '您还没有视频作品',
     emptyLinkRouteText: '点击这里',
     emptyRightText: '开始制作视频'
@@ -63,6 +66,22 @@ export const commonZh = {
     titleH1: '提示',
     titleOk: '确认删除？',
     titleText: '删除后将无法恢复哦~'
+  },
+  listView: {
+    cardViewText: '卡片视图',
+    tableViewText: '列表视图',
+    batchDeleteText: '批量删除',
+    selectedCountText: '已选 {count} 条',
+    batchDeleteTitle: '批量删除',
+    batchDeleteConfirmText: '将删除 {count} 条，不可恢复',
+    batchDeletePartialText: '删除完成：成功 {success} 条，失败 {failed} 条',
+    nameText: '名称',
+    statusText: '状态',
+    createdText: '创建时间',
+    durationText: '时长',
+    voiceCountText: '语音数量',
+    operationText: '操作',
+    deleteText: '删除'
   },
   message: {
     deleteErrorText: '删除失败',
@@ -198,6 +217,9 @@ export const commonEn = {
     draftsText: 'Drafts',
     underProduction: 'Generating, please wait for a moment.',
     queuing: 'In the queue, please wait  for a moment.',
+    statusWaitingText: 'Queued',
+    statusPendingText: 'Generating',
+    statusSuccessText: 'Done',
     emptyText: "You don't have any video works yet",
     emptyLinkRouteText: 'click here',
     emptyRightText: 'to Create Video.'
@@ -216,6 +238,22 @@ export const commonEn = {
     titleH1: 'Notice',
     titleOk: 'Confirm Delete?',
     titleText: 'It cannot be recovered after deletion~'
+  },
+  listView: {
+    cardViewText: 'Card View',
+    tableViewText: 'List View',
+    batchDeleteText: 'Batch Delete',
+    selectedCountText: '{count} selected',
+    batchDeleteTitle: 'Batch Delete',
+    batchDeleteConfirmText: 'This will delete {count} items and cannot be undone',
+    batchDeletePartialText: 'Delete finished: {success} succeeded, {failed} failed',
+    nameText: 'Name',
+    statusText: 'Status',
+    createdText: 'Created',
+    durationText: 'Duration',
+    voiceCountText: 'Voices',
+    operationText: 'Actions',
+    deleteText: 'Delete'
   },
   message: {
     deleteErrorText: 'Failed',
