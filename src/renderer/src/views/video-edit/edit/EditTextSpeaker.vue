@@ -25,8 +25,13 @@ import { reactive, onUnmounted, watchEffect } from 'vue'
 import { SearchIcon } from 'tdesign-icons-vue-next'
 import PlayIcon from '@renderer/assets/images/icons/icon-play.png'
 import PauseIcon from '@renderer/assets/images/icons/icon-pause.png'
-import { modelPage } from '@renderer/api'
+import { modelPage, voicePreview } from '@renderer/api'
+import { isDesktop } from '@renderer/client'
+import { localUrl } from '@renderer/utils'
 import { MessagePlugin } from 'tdesign-vue-next'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const select = defineModel({})
 
@@ -57,7 +62,8 @@ const state = reactive({
   search: '',
   playingId: '',
   status: AUDIO_STATUS.UNPLAY,
-  speakerList: []
+  speakerList: [],
+  blobUrl: ''
 })
 
 
@@ -104,17 +110,41 @@ const action = {
     audio.pause()
     audio.currentTime = 0
     state.playingId = ''
+    if (state.blobUrl) {
+      URL.revokeObjectURL(state.blobUrl)
+      state.blobUrl = ''
+    }
   },
-  playAudio(speaker) {
-    audio.src = speaker.audio_path
+  async playAudio(speaker) {
     state.playingId = speaker.id
-    audio.play()
+    try {
+      // Desktop: absolute filesystem path → file:// URL (ipcApi stays untouched).
+      // Web: the preview endpoint requires auth, so fetch it with the token and
+      // play a blob URL (an <audio> tag cannot send the Authorization header).
+      if (isDesktop) {
+        audio.src = localUrl.addFileProtocol(speaker.audio_path)
+      } else {
+        const url = await voicePreview(speaker.audio_path)
+        if (state.blobUrl) URL.revokeObjectURL(state.blobUrl)
+        state.blobUrl = url
+        audio.src = url
+      }
+      await audio.play()
+    } catch (err) {
+      action.stopAudio()
+      const message = err && err.message
+      if (message && /参考音频不存在|音色不存在|不存在/.test(message)) {
+        MessagePlugin.error(t('common.editView.noReferenceAudio'))
+      } else {
+        MessagePlugin.error(t('common.editView.playAudioError'))
+      }
+    }
   },
 
   handlePlay(speaker) {
     action.selectSpeaker(speaker)
     if (!speaker.audio_path) {
-      MessagePlugin.error(`未找到${speaker.name}的音频链接`)
+      MessagePlugin.error(t('common.editView.noReferenceAudio'))
       return
     }
     if (state.playingId === speaker.id) {

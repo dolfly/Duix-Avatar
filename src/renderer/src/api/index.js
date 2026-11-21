@@ -35,17 +35,27 @@ function redirectToLoginIfUnauthorized(response, url) {
 }
 
 export async function http(url, options = {}) {
-  const response = await fetch(url, { ...options, headers: authHeaders(options.headers) })
+  const { responseType = 'text', ...fetchOptions } = options
+  const response = await fetch(url, { ...fetchOptions, headers: authHeaders(options.headers) })
+  redirectToLoginIfUnauthorized(response, url)
+  if (!response.ok) {
+    const text = await response.text()
+    let message = text
+    try {
+      const parsed = text ? JSON.parse(text) : null
+      message = (parsed && parsed.message) || text
+    } catch {
+      // non-JSON error body; keep the raw text
+    }
+    throw new Error(message || `请求失败 (${response.status})`)
+  }
+  if (responseType === 'blob') return response.blob()
   const text = await response.text()
   let data = null
   try {
     data = text ? JSON.parse(text) : null
   } catch {
     data = text
-  }
-  redirectToLoginIfUnauthorized(response, url)
-  if (!response.ok) {
-    throw new Error((data && data.message) || text || `请求失败 (${response.status})`)
   }
   return data
 }
@@ -173,6 +183,14 @@ const httpApi = {
       body: JSON.stringify({ text })
     })
     return result ? result.audioPath : ''
+  },
+
+  // The reference-audio preview lives behind auth, but an <audio> tag cannot send
+  // the Authorization header. Fetch it with the token here and hand the component a
+  // blob URL (the same pattern as `exportVideo`).
+  voicePreview: async (audioPath) => {
+    const blob = await http(audioPath, { responseType: 'blob' })
+    return URL.createObjectURL(blob)
   }
 }
 
@@ -195,7 +213,8 @@ const ipcApi = {
   getContext: (key) => ipcRenderer().invoke('context/get', key),
   saveContext: (key, val) => ipcRenderer().invoke('context/save', key, val),
 
-  audition: (voiceId, text) => ipcRenderer().invoke('voice/audition', voiceId, text)
+  audition: (voiceId, text) => ipcRenderer().invoke('voice/audition', voiceId, text),
+  voicePreview: () => {}
 }
 
 const api = isDesktop ? ipcApi : httpApi
@@ -219,5 +238,7 @@ export const getContext = api.getContext
 export const saveContext = api.saveContext
 
 export const audition = api.audition
+
+export const voicePreview = api.voicePreview
 
 export default api

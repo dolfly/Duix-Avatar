@@ -125,7 +125,9 @@ export const commonZh = {
     myVoice: '我的',
     selectSpeaker: '选择',
     speaker: '音色',
-    searchSpeaker: '搜索音色'
+    searchSpeaker: '搜索音色',
+    noReferenceAudio: '该音色无参考音频',
+    playAudioError: '音色播放失败，请重试'
   },
   headerView: {
     headerBackText: '返回',
@@ -274,7 +276,9 @@ export const commonEn = {
     myVoice: 'My',
     selectSpeaker: 'Select',
     speaker: 'Speaker',
-    searchSpeaker: 'Search Speaker'
+    searchSpeaker: 'Search Speaker',
+    noReferenceAudio: 'This voice has no reference audio',
+    playAudioError: 'Failed to play the voice, please try again'
   },
   headerView: {
     headerBackText: 'Back',
