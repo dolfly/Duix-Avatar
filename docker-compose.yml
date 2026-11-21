@@ -57,6 +57,12 @@ services:
     image: duix-avatar-server:${IMAGE_TAG:-latest}
     container_name: duix-server
     restart: unless-stopped
+    # The VRAM admission gate runs `nvidia-smi` from the server to check free GPU memory
+    # before submitting. The `utility` capability mounts ONLY nvidia-smi + libnvidia-ml
+    # (no GPU compute), and NVIDIA_VISIBLE_DEVICES scopes the probe to the same card the
+    # GPU containers use. On a host without an nvidia runtime, override GPU_RUNTIME (and
+    # set VIDEO_VRAM_CHECK=false) - see doc/web-deployment.md.
+    runtime: ${GPU_RUNTIME:-nvidia}
     depends_on:
       duix-rqlite:
         condition: service_healthy
@@ -69,6 +75,9 @@ services:
       RQLITE_LEVEL: ${RQLITE_LEVEL:-weak}
       TTS_BASE_URL: ${TTS_BASE_URL:-http://duix-tts:8080}
       FACE2FACE_BASE_URL: ${FACE2FACE_BASE_URL:-http://duix-gen-video:8383/easy}
+      # GPU probe visibility (see runtime comment above).
+      NVIDIA_VISIBLE_DEVICES: ${GPU_IDS:-0}
+      NVIDIA_DRIVER_CAPABILITIES: utility
       # Path prefix the server sends to the TTS service in `reference_audio`. The upstream
       # TTS image prepends its own media_path `/code/data` (config/config.py) to this value,
       # so it must be a leading-slash path RELATIVE to that root. With `/` the server sends
@@ -91,6 +100,14 @@ services:
       WORKER_ENABLED: ${WORKER_ENABLED:-true}
       WORKER_INTERVAL_MS: ${WORKER_INTERVAL_MS:-2000}
       WORKER_LEASE_MS: ${WORKER_LEASE_MS:-120000}
+      # GPU inference admission gates (DO-120): in-flight cap, total task timeout, and a
+      # fail-closed VRAM check before submit. Defaults tuned for a single 8 GiB card.
+      VIDEO_MAX_INFLIGHT: ${VIDEO_MAX_INFLIGHT:-1}
+      VIDEO_TASK_TIMEOUT_MS: ${VIDEO_TASK_TIMEOUT_MS:-1800000}
+      VIDEO_VRAM_CHECK: ${VIDEO_VRAM_CHECK:-true}
+      VIDEO_MIN_FREE_VRAM_MB: ${VIDEO_MIN_FREE_VRAM_MB:-2048}
+      NVIDIA_SMI_BIN: ${NVIDIA_SMI_BIN:-nvidia-smi}
+      VIDEO_VRAM_PROBE_TIMEOUT_MS: ${VIDEO_VRAM_PROBE_TIMEOUT_MS:-5000}
     volumes:
       - ${DATA_DIR:-./data}:/data
     ports:
@@ -118,6 +135,12 @@ services:
     restart: unless-stopped
     runtime: ${GPU_RUNTIME:-nvidia}
     working_dir: /code
+    # Hard resource ceiling (DO-120): a runaway model must never be able to eat the
+    # whole 24 GiB / 8 vCPU host and have the kernel OOM-kill other containers. The
+    # mem_limit bounds the container; cpus/pids bound CPU and process count. Tune in .env.
+    mem_limit: ${TTS_MEM_LIMIT:-4g}
+    cpus: ${TTS_CPUS:-2}
+    pids_limit: ${TTS_PIDS_LIMIT:-512}
     environment:
       - NVIDIA_VISIBLE_DEVICES=${GPU_IDS:-0}
       - NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,video,display
@@ -146,7 +169,13 @@ services:
     volumes:
       - ${DATA_DIR:-./data}/face2face:/code/data
     command: python /code/app_local.py
-    shm_size: ${SHM_SIZE:-8g}
+    shm_size: ${SHM_SIZE:-4g}
+    # Hard resource ceiling (DO-120): the single-inference gen-video process is the worst
+    # memory hog, but the 24 GiB host also runs toonflow/scenoria/runvm, so it must stay
+    # bounded. Tune in .env.
+    mem_limit: ${GEN_VIDEO_MEM_LIMIT:-8g}
+    cpus: ${GEN_VIDEO_CPUS:-4}
+    pids_limit: ${GEN_VIDEO_PIDS_LIMIT:-512}
     ports:
       - '127.0.0.1:${GEN_VIDEO_PORT:-8383}:8383'
     networks:
@@ -162,6 +191,10 @@ services:
     restart: unless-stopped
     runtime: ${GPU_RUNTIME:-nvidia}
     working_dir: /workspace/FunASR/runtime
+    # Hard resource ceiling (DO-120), same rationale as duix-tts / duix-gen-video.
+    mem_limit: ${ASR_MEM_LIMIT:-2g}
+    cpus: ${ASR_CPUS:-1}
+    pids_limit: ${ASR_PIDS_LIMIT:-256}
     environment:
       # Same GPU filtering as duix-tts/duix-gen-video: on multi-GPU hosts pick the card that
       # supports the models; without it the nvidia runtime defaults to all cards.

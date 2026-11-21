@@ -356,6 +356,15 @@ describe('video API', () => {
     expect((await ctx.services.video.find(id)).status).toBe('waiting')
   })
 
+  it('surfaces the internal submitting state as pending (no blank card)', async () => {
+    const id = await createDraft({ voiceId: 1 })
+    await authed.post(`/api/videos/${id}/make`)
+    await store.execute("UPDATE video SET status = 'submitting' WHERE id = ?", [id])
+
+    const video = await ctx.services.video.find(id)
+    expect(video.status).toBe('pending')
+  })
+
   it('patches editable fields', async () => {
     const id = await createDraft()
     const response = await authed.patch(`/api/videos/${id}`).send({ name: '改名', textContent: '新的文案' })
@@ -454,6 +463,21 @@ describe('video API', () => {
     const video = await ctx.services.video.find(id)
     expect(video.status).toBe('failed')
     expect(video.message).toMatch(/模特/)
+  })
+
+  it('does not submit a task the timeout sweep already failed', async () => {
+    const id = await createDraft()
+    await authed.post(`/api/videos/${id}/make`)
+    // Claimed (submitting) with audio pre-set so synthesize skips TTS; then the sweep
+    // failed it while TTS would have been running.
+    await store.execute("UPDATE video SET status = 'submitting', audio_path = 'temp/x.wav' WHERE id = ?", [id])
+    await store.execute("UPDATE video SET status = 'failed', message = '合成超时，已释放' WHERE id = ?", [id])
+
+    const row = await store.queryOne('SELECT * FROM video WHERE id = ?', [id])
+    const result = await ctx.services.video.synthesize(row)
+
+    expect(result.status).toBe('failed')
+    expect(f2fState.submits).toHaveLength(0) // must not come back to life as pending
   })
 })
 

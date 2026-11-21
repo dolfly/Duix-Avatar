@@ -143,13 +143,22 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 | `AUTH_USERNAME` | 空（必填） | 登录账号 |
 | `AUTH_PASSWORD_HASH` | 空（二选一） | scrypt 哈希，格式 `scrypt$N$r$p$saltHex$hashHex`；`$` 需写成 `$$` |
 | `AUTH_PASSWORD` | 空（二选一） | 明文替代项，启动时哈希、不落库 |
-| `SHM_SIZE` | `8g` | gen-video 的共享内存 |
+| `SHM_SIZE` | `4g` | gen-video 的共享内存（PyTorch 用 /dev/shm；宿主 24 GiB，8g 偏大） |
 | `TTS_IMAGE` / `GEN_VIDEO_IMAGE` / `ASR_IMAGE` | 上游镜像 | 改成镜像仓库/本地 tag |
 | `IMAGE_TAG` | `latest` | 本地构建的 web/server 镜像 tag |
 | `LOG_LEVEL` | `info` | `silent` / `error` / `warn` / `info` / `debug` |
 | `WORKER_ENABLED` | `true` | 是否启用视频队列 worker |
 | `WORKER_INTERVAL_MS` | `2000` | worker 轮询间隔 |
 | `WORKER_LEASE_MS` | `120000` | 任务租约时长（多实例防重复） |
+| `VIDEO_MAX_INFLIGHT` | `1` | 同时处于 GPU 处理中（submitting+pending）的视频任务上限 |
+| `VIDEO_TASK_TIMEOUT_MS` | `1800000` | 从认领到终态的总超时（ms，30 分钟），超时判 failed |
+| `VIDEO_VRAM_CHECK` | `true` | 提交前显存准入（fail-closed：查不到就不提交） |
+| `VIDEO_MIN_FREE_VRAM_MB` | `2048` | 目标卡可用显存低于此值（MB）时不提交 |
+| `NVIDIA_SMI_BIN` | `nvidia-smi` | 显存探针所用的 nvidia-smi 路径 |
+| `VIDEO_VRAM_PROBE_TIMEOUT_MS` | `5000` | nvidia-smi 探针子进程超时（ms），避免每次提交引入秒级阻塞 |
+| `GEN_VIDEO_MEM_LIMIT` / `GEN_VIDEO_CPUS` / `GEN_VIDEO_PIDS_LIMIT` | `8g` / `4` / `512` | gen-video 容器资源上限 |
+| `TTS_MEM_LIMIT` / `TTS_CPUS` / `TTS_PIDS_LIMIT` | `4g` / `2` / `512` | tts 容器资源上限 |
+| `ASR_MEM_LIMIT` / `ASR_CPUS` / `ASR_PIDS_LIMIT` | `2g` / `1` / `256` | asr 容器资源上限 |
 | `RQLITE_LEVEL` | `weak` | rqlite 一致性级别：`none` / `weak` / `strong` / `all` |
 | `RQLITE_NODE_ID` | `duix-rqlite` | rqlite 节点身份。**不要改**：它被写进持久化的 Raft 配置，变了集群就选不出主 |
 | `RQLITE_HTTP_ADV_ADDR` | `duix-rqlite:4001` | rqlite 对客户端通告的 HTTP 地址 |
@@ -214,6 +223,43 @@ GPU 容器**不再使用 `privileged`**，`NVIDIA_VISIBLE_DEVICES`（即 `GPU_ID
 - `GPU_IDS` 支持逗号列表（如 `0,1`），透传给 `NVIDIA_VISIBLE_DEVICES`。
 - 显存：TTS + gen-video + ASR 三卡共用一张 GPU 时会较紧张，按需只起需要的服务。
 
+### GPU 推理准入闸（DO-120）
+
+CT131 曾经因为「任务失控 + 提交量失控」把整机拖死。为彻底堵住，服务端在提交链路加了四道闸，
+全部可在 `.env` 调：
+
+1. **修「租约过期 → 同任务重复提交」（真凶）**。旧逻辑里 `synthesize()` 在做分钟级 TTS 之前不改状态，
+   任务一直是 `waiting`；租约（`WORKER_LEASE_MS`，2 分钟）一过期，下一次 tick 就把同一条 `waiting`
+   任务重新认领、重新 TTS、重新 `submit`（且每次 `code` 都是新任务号），gen-video 每 submit 一次就起
+   一个线程，旧的变孤儿继续占卡。现在认领时原子地把 `waiting → submitting`，任务从此不再出现在
+   `waiting` 队列里，租约过期不会再触发重复提交。
+2. **在飞上限 `VIDEO_MAX_INFLIGHT`（默认 1）**。统计同时处于 `submitting + pending` 的任务数，
+   到达上限时 `tick()` 不提交新任务、留在队列等（不丢、不失败、不重复）。默认 1 的依据：gen-video
+   是单进程、每次 submit 起一个线程、只有一张 8 GiB 卡，并发推理必然互相挤爆。
+3. **总超时 `VIDEO_TASK_TIMEOUT_MS`（默认 30 分钟）+ 单次 HTTP 超时**。每个任务从认领到终态
+   （含 TTS + 提交 + 轮询）有个硬墙，超过就判 `failed` 并释放，不再永远占着队列和显卡；轮询
+   gen-video 的单次请求已由 `FACE2FACE_TIMEOUT_MS`（默认 60s）兜底。
+4. **提交前显存准入（fail-closed）+ 容器资源上限**。提交前用 `nvidia-smi` 查目标卡可用显存，
+   低于 `VIDEO_MIN_FREE_VRAM_MB`（默认 2048 MB）或**查不到就不提交**（fail-closed），原因写进任务
+   `message` 与日志；`duix-gen-video` / `duix-tts` / `duix-asr` 三个容器都加了 `mem_limit` / `cpus` /
+   `pids_limit`，单容器触顶时宿主机整机仍可用，OOM killer 不会去掀 toonflow / scenoria / runvm。
+
+**显存探针怎么取到占用**：`duix-server` 容器以 `NVIDIA_DRIVER_CAPABILITIES=utility` 跑在 nvidia
+runtime 下（只挂 `nvidia-smi` + `libnvidia-ml`，不给 GPU 计算权），`NVIDIA_VISIBLE_DEVICES` 与 GPU
+容器一致，因此探针看到的正是目标卡。它用 `child_process.execFile` + 5s 超时执行，正常约几十毫秒，
+不会每次提交引入秒级阻塞。**降级/失败口径**：nvidia-smi 不存在、超时、输出异常都按 fail-closed
+处理（不提交）。没有 GPU 的主机（本就无法合成视频）把 `GPU_RUNTIME` 指到一个普通 runtime 并设
+`VIDEO_VRAM_CHECK=false`，此时只由 `VIDEO_MAX_INFLIGHT=1` 提供保护。
+
+**可观测性**：一次正常视频任务的资源占用（容器峰值内存/显存、任务耗时、队列长度）可在宿主机用
+`docker stats` + `nvidia-smi` 采集；任务级状态与等待原因写在 `video.message`，队列长度在作品列表
+的 `等待中 x/y` 可见，`/api/health` 的 `worker` 字段反映 worker 运行状态。下次再卡死时，先看
+`docker stats`（内存）、`nvidia-smi`（显存）、服务端日志（提交量/重复提交）即可定位。
+
+> **边界**：gen-video 镜像内部的 Python（`/code/app_local.py` 每次 submit 起一个线程、容器内线程
+> 无上限）是第三方镜像，本仓库改不了；容器内线程无上限的问题靠「服务端不再乱提交」（在飞上限 +
+> 显存准入）来缓解。
+
 ---
 
 ## 5. 数据目录
@@ -258,15 +304,17 @@ tar czf duix-data-$(date +%F).tgz ./data
 
 ## 6. 多实例部署
 
-Web 服务可以水平扩展，且**视频队列不会重复处理**：worker 抢任务用的是原子 SQL
+Web 服务可以水平扩展，且**视频队列不会重复处理**：worker 抢任务用的是原子 SQL，认领即把任务从
+`waiting` 翻成 `submitting`，因此同一任务绝不会被两个实例重复提交：
 
 ```sql
-UPDATE video SET status = 'pending', claimed_by = ?, claimed_at = ?
- WHERE id = ? AND (claimed_by IS NULL OR claimed_at < ?)
+UPDATE video SET status = 'submitting', claimed_by = ?, claimed_at = ?, started_at = ?
+ WHERE id = ? AND status = 'waiting'
+   AND (SELECT COUNT(*) FROM video WHERE status IN ('submitting', 'pending')) < ?
 ```
 
-只有 `rows_affected = 1` 的实例才继续处理；实例崩溃后租约到期（`WORKER_LEASE_MS`），
-任务由其他实例接管。
+只有 `rows_affected = 1` 的实例才继续处理；实例崩溃后，任务在总超时
+（`VIDEO_TASK_TIMEOUT_MS`）后被判失败并释放，`pending` 轮询则由短租约（`WORKER_LEASE_MS`）接管。
 
 示例：两个 API 实例 + 一个 rqlite + 一个 nginx。
 

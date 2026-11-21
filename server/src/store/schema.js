@@ -84,6 +84,15 @@ export const migrations = [
       `ALTER TABLE video ADD COLUMN claimed_by TEXT`,
       `ALTER TABLE video ADD COLUMN claimed_at INTEGER`
     ]
+  },
+  {
+    version: 5,
+    statements: [
+      // When a task first leaves `waiting` (enters the GPU pipeline). It is set once at
+      // claim time and never refreshed, so it measures total task time (TTS + submit +
+      // poll) for the worker's total-timeout sweep.
+      `ALTER TABLE video ADD COLUMN started_at INTEGER`
+    ]
   }
 ]
 

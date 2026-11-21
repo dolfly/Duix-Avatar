@@ -297,6 +297,15 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
       audioRelative = await voiceService.makeAudio({ voice, text: video.text_content })
     }
 
+    // The total-timeout sweep runs on a timer while TTS is busy here. It may have
+    // already failed this task (and released its claim) if the whole pipeline outlived
+    // VIDEO_TASK_TIMEOUT_MS. Never submit a task that is no longer in the `submitting`
+    // state, otherwise a timed-out task would come back to life as `pending`.
+    const current = await videoDao.selectByID(video.id)
+    if (!current || current.status !== 'submitting') {
+      return { status: 'failed' }
+    }
+
     const code = randomId()
     const param = {
       audio_url: media.toFace2faceRemotePath(audioRelative),
@@ -391,7 +400,10 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
 }
 
 function toVideoDto(row, { media, waitingIds = [] }) {
-  const status = row.status
+  // `submitting` (TTS + submit in progress) is an internal intermediate state the web UI
+  // does not know about; surface it as `pending` so the card shows "制作中" instead of a
+  // blank row during the minutes-long synthesis.
+  const status = row.status === 'submitting' ? 'pending' : row.status
   let progress = row.progress ?? 0
   if (status === 'waiting') {
     const index = waitingIds.indexOf(row.id)

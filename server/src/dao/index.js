@@ -161,18 +161,44 @@ export function createVideoDao(store) {
     },
 
     /**
-     * Atomically lease a task. Returns true when this instance won the claim.
-     * rqlite executes the statement in a transaction, so rows_affected is authoritative
-     * even with several server instances sharing one database.
+     * Atomically move a `waiting` task into the intermediate `submitting` state.
+     *
+     * The status flip is what fixes the duplicate-submission bug: the old `claim()` kept
+     * the task `waiting` while `synthesize()` did the minutes-long TTS, so once the lease
+     * expired another tick re-claimed the *same still-waiting* row and submitted it again.
+     * Once the row is `submitting` it can no longer be found by the `waiting` queue.
+     *
+     * The in-flight admission gate is enforced atomically in the same statement (rqlite
+     * runs it as a transaction), so two racing workers can never both sneak a task past
+     * the `maxInflight` cap. `started_at` is (re)set here: a re-queued task gets a fresh
+     * total-timeout window.
      */
-    async claim(id, { claimedBy, leaseMs, status, now = Date.now() }) {
+    async claimWaiting(id, { claimedBy, maxInflight, now = Date.now() }) {
       const result = await store.execute(
         `UPDATE video
-            SET claimed_by = ?, claimed_at = ?
+            SET status = 'submitting', claimed_by = ?, claimed_at = ?, started_at = ?
           WHERE id = ?
-            AND status = ?
+            AND status = 'waiting'
+            AND (SELECT COUNT(*) FROM video WHERE status IN ('submitting', 'pending')) < ?`,
+        [claimedBy, now, now, id, maxInflight]
+      )
+      return Number(result.rowsAffected) === 1
+    },
+
+    /**
+     * Re-lease an already-submitted `pending` task so this worker can poll it. The lease
+     * (short, `leaseMs`) is what makes a crashed polling worker recoverable by another
+     * instance; `started_at` is left untouched so the total timeout keeps counting from
+     * first claim. `COALESCE` backfills rows that predate the `started_at` column.
+     */
+    async claimPending(id, { claimedBy, leaseMs, now = Date.now() }) {
+      const result = await store.execute(
+        `UPDATE video
+            SET claimed_by = ?, claimed_at = ?, started_at = COALESCE(started_at, ?)
+          WHERE id = ?
+            AND status = 'pending'
             AND (claimed_by IS NULL OR claimed_at IS NULL OR claimed_at < ?)`,
-        [claimedBy, now, id, status, now - leaseMs]
+        [claimedBy, now, now, id, now - leaseMs]
       )
       return Number(result.rowsAffected) === 1
     },
@@ -184,11 +210,36 @@ export function createVideoDao(store) {
       )
     },
 
-    findStale(leaseMs, now = Date.now()) {
-      return store.query(
-        'SELECT * FROM video WHERE claimed_by IS NOT NULL AND claimed_at < ? ORDER BY id ASC',
-        [now - leaseMs]
+    /** Number of tasks currently inside the GPU pipeline (submitted or submitting). */
+    async countInflight() {
+      return Number(
+        (await store.queryScalar(
+          "SELECT COUNT(*) AS n FROM video WHERE status IN ('submitting', 'pending')",
+          []
+        )) || 0
       )
+    },
+
+    /**
+     * Fail every task that has spent longer than its total timeout inside the GPU
+     * pipeline. Called at the top of each tick; `started_at` is the first-claim time, so
+     * a gen-video that keeps answering "processing" can no longer occupy the queue and
+     * the card forever. Also releases the claim so the row is fully free.
+     */
+    async failTimedOut(cutoffMs) {
+      return store.execute(
+        `UPDATE video
+            SET status = 'failed', message = '合成超时，已释放', claimed_by = NULL, claimed_at = NULL
+          WHERE status IN ('submitting', 'pending')
+            AND started_at IS NOT NULL
+            AND started_at < ?`,
+        [cutoffMs]
+      )
+    },
+
+    /** Surface a queue-wide wait reason on every `waiting` task (best effort, idempotent). */
+    updateWaitingMessage(message) {
+      return store.execute('UPDATE video SET message = ? WHERE status = ?', [message, 'waiting'])
     }
   }
 }

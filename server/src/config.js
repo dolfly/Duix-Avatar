@@ -80,7 +80,24 @@ export function loadConfig(env = process.env) {
       intervalMs: int(env.WORKER_INTERVAL_MS, 2000),
       // A claimed task is leased for this long before another instance may retry it.
       leaseMs: int(env.WORKER_LEASE_MS, 120000),
+      // Max tasks concurrently inside the GPU pipeline (submitting + pending). gen-video
+      // is a single process, one thread per submit, on a single card, so 1 is the safe
+      // default: concurrent inference would thrash the 8 GiB card.
+      maxInflight: int(env.VIDEO_MAX_INFLIGHT, 1),
+      // Hard wall from first claim to a terminal status (TTS + submit + poll). A task
+      // that outlives this is marked failed by the worker so it can't occupy the queue
+      // and the card forever. TTS is the long pole (minutes), so 30 min is generous.
+      taskTimeoutMs: int(env.VIDEO_TASK_TIMEOUT_MS, 30 * 60 * 1000),
       pollTimeoutMs: int(env.FACE2FACE_TIMEOUT_MS, 60 * 1000)
+    },
+    gpu: {
+      // Admission check before submit: don't submit when the target card can't fit
+      // another inference. Fail-closed (cannot determine -> don't submit). Disable only
+      // on hosts where the probe cannot run (see doc/web-deployment.md).
+      vramCheck: bool(env.VIDEO_VRAM_CHECK, true),
+      minFreeVramMb: int(env.VIDEO_MIN_FREE_VRAM_MB, 2048),
+      smiBin: env.NVIDIA_SMI_BIN || 'nvidia-smi',
+      probeTimeoutMs: int(env.VIDEO_VRAM_PROBE_TIMEOUT_MS, 5000)
     },
     auth: {
       username: authUsername,
