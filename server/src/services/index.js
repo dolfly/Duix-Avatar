@@ -297,6 +297,15 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
       audioRelative = await voiceService.makeAudio({ voice, text: video.text_content })
     }
 
+    // The total-timeout sweep runs on a timer while TTS is busy here. It may have
+    // already failed this task (and released its claim) if the whole pipeline outlived
+    // VIDEO_TASK_TIMEOUT_MS. Never submit a task that is no longer in the `submitting`
+    // state, otherwise a timed-out task would come back to life as `pending`.
+    const current = await videoDao.selectByID(video.id)
+    if (!current || current.status !== 'submitting') {
+      return { status: 'failed' }
+    }
+
     const code = randomId()
     const param = {
       audio_url: media.toFace2faceRemotePath(audioRelative),

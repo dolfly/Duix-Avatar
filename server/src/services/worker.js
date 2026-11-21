@@ -48,9 +48,10 @@ export function createVideoWorker({
     let task = null
     try {
       // 2. Poll phase: an already-submitted task keeps making progress. This runs first
-      //    so a `pending` task is never starved by the queue behind it.
-      const pending = await videoDao.findFirstByStatus('pending')
-      if (pending) {
+      //    so a `pending` task is never starved by the queue behind it. Iterate until one
+      //    is claimable so a single held lease can't starve the other pending tasks.
+      const pendingTasks = await videoDao.selectByStatus('pending')
+      for (const pending of pendingTasks) {
         const claimed = await videoDao.claimPending(pending.id, {
           claimedBy: instanceId,
           leaseMs,
@@ -61,10 +62,9 @@ export function createVideoWorker({
           await videoService.poll(pending)
           return
         }
-        // Not claimed: another instance still holds this pending task's lease. Fall
-        // through to the submit phase; the in-flight cap below decides whether the card
-        // has room for a new submission.
       }
+      // None claimable: other instances hold the pending leases. Fall through to the
+      // submit phase; the in-flight cap below decides whether the card has room.
 
       // 3. Submit phase: only when there is something waiting to run.
       const waiting = await videoDao.findFirstByStatus('waiting')

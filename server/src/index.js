@@ -58,7 +58,13 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
         taskTimeoutMs: config.worker.taskTimeoutMs,
         maxInflight: config.worker.maxInflight,
         intervalMs: config.worker.intervalMs,
-        gpuGate: createVramGate({ ...config.gpu, log }),
+        gpuGate: createVramGate({
+          enabled: config.gpu.vramCheck,
+          bin: config.gpu.smiBin,
+          minFreeMb: config.gpu.minFreeVramMb,
+          timeoutMs: config.gpu.probeTimeoutMs,
+          log
+        }),
         log
       })
     : null

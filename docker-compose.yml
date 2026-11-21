@@ -107,6 +107,7 @@ services:
       VIDEO_VRAM_CHECK: ${VIDEO_VRAM_CHECK:-true}
       VIDEO_MIN_FREE_VRAM_MB: ${VIDEO_MIN_FREE_VRAM_MB:-2048}
       NVIDIA_SMI_BIN: ${NVIDIA_SMI_BIN:-nvidia-smi}
+      VIDEO_VRAM_PROBE_TIMEOUT_MS: ${VIDEO_VRAM_PROBE_TIMEOUT_MS:-5000}
     volumes:
       - ${DATA_DIR:-./data}:/data
     ports:

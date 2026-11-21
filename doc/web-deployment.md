@@ -155,6 +155,7 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 | `VIDEO_VRAM_CHECK` | `true` | 提交前显存准入（fail-closed：查不到就不提交） |
 | `VIDEO_MIN_FREE_VRAM_MB` | `2048` | 目标卡可用显存低于此值（MB）时不提交 |
 | `NVIDIA_SMI_BIN` | `nvidia-smi` | 显存探针所用的 nvidia-smi 路径 |
+| `VIDEO_VRAM_PROBE_TIMEOUT_MS` | `5000` | nvidia-smi 探针子进程超时（ms），避免每次提交引入秒级阻塞 |
 | `GEN_VIDEO_MEM_LIMIT` / `GEN_VIDEO_CPUS` / `GEN_VIDEO_PIDS_LIMIT` | `8g` / `4` / `512` | gen-video 容器资源上限 |
 | `TTS_MEM_LIMIT` / `TTS_CPUS` / `TTS_PIDS_LIMIT` | `4g` / `2` / `512` | tts 容器资源上限 |
 | `ASR_MEM_LIMIT` / `ASR_CPUS` / `ASR_PIDS_LIMIT` | `2g` / `1` / `256` | asr 容器资源上限 |
