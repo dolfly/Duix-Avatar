@@ -329,12 +329,15 @@ const confirmBatchDelete = async () => {
     } else if (deleted.length === 0) {
       MessagePlugin.error(t('common.message.deleteErrorText'))
     } else {
-      const failedNames = failed.map((f) => nameById[f.id] ?? f.id).join('、')
+      const failedNames = failed.map((f) => nameById[f.id] ?? f.id).join(t('common.listView.batchDeleteFailedSeparator'))
+      const failedSuffix = failedNames
+        ? t('common.listView.batchDeleteFailedNamesText', { names: failedNames })
+        : ''
       MessagePlugin.warning(
         `${t('common.listView.batchDeletePartialText', {
           success: deleted.length,
           failed: failed.length
-        })}${failedNames ? `（${failedNames}）` : ''}`
+        })}${failedSuffix}`
       )
     }
   } catch (error) {

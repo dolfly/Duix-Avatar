@@ -348,8 +348,10 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
   async function remove(id) {
     const row = await videoDao.selectByID(id)
     if (!row) return false
+    // A finished video carries both the result mp4 (`file_path`) and its TTS wav
+    // (`audio_path`); both must be cleaned up, so these are two independent `if`s.
     if (row.file_path) media.remove(row.file_path)
-    else if (row.audio_path) media.remove(row.audio_path)
+    if (row.audio_path) media.remove(row.audio_path)
     await videoDao.remove(id)
     return true
   }

@@ -410,13 +410,19 @@ describe('video API', () => {
     const id1 = await createDraft()
     const id2 = await createDraft()
     fs.writeFileSync(path.join(dataDir, 'face2face', 'temp', 'batch.mp4'), 'fake-result')
-    await store.execute("UPDATE video SET file_path = 'temp/batch.mp4', status = 'success' WHERE id = ?", [id1])
+    fs.writeFileSync(path.join(dataDir, 'face2face', 'temp', 'batch.wav'), 'fake-audio')
+    await store.execute(
+      "UPDATE video SET file_path = 'temp/batch.mp4', audio_path = 'temp/batch.wav', status = 'success' WHERE id = ?",
+      [id1]
+    )
 
     const response = await authed.post('/api/videos/batch-delete').send({ ids: [id1, id2, 99999] })
     expect(response.status).toBe(200)
     expect(response.body.deleted).toEqual([id1, id2])
     expect(response.body.failed).toEqual([{ id: 99999, message: '作品不存在' }])
+    // A finished video has both the result mp4 and its TTS wav; both must disappear.
     expect(fs.existsSync(path.join(dataDir, 'face2face', 'temp', 'batch.mp4'))).toBe(false)
+    expect(fs.existsSync(path.join(dataDir, 'face2face', 'temp', 'batch.wav'))).toBe(false)
   })
 
   it('rejects malformed ids on video batch delete', async () => {
