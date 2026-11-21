@@ -138,3 +138,84 @@ export function createVideoWorker({
 }
 
 export default createVideoWorker
+
+/**
+ * Background worker for audition (voice preview) tasks. Same claim/lease contract as
+ * `createVideoWorker`, but single-phase: claim a `waiting` task, synthesise the TTS
+ * audio, then mark it `success`/`failed`.
+ *
+ * The lease is intentionally long (callers pass the TTS timeout) because a synthesis
+ * takes minutes; a shorter lease would let another tick re-claim the task mid-flight
+ * and synthesise it twice.
+ */
+export function createAuditionWorker({
+  auditionDao,
+  auditionService,
+  leaseMs = 900000,
+  intervalMs = 2000,
+  log,
+  timers = { setInterval, clearInterval },
+  now = () => Date.now()
+}) {
+  let timer = null
+  let stopped = true
+
+  const instanceId = `server-${process.pid}-${randomUUID().slice(0, 8)}`
+
+  async function claimOne(status) {
+    const task = await auditionDao.findFirstByStatus(status)
+    if (!task) return null
+    const claimed = await auditionDao.claim(task.id, { claimedBy: instanceId, leaseMs, status, now: now() })
+    return claimed ? task : null
+  }
+
+  async function release(id) {
+    try {
+      await auditionDao.release(id, instanceId)
+    } catch (error) {
+      log?.warn?.(`failed to release claim on audition ${id}: ${error?.message || error}`)
+    }
+  }
+
+  async function tick() {
+    let task = null
+    try {
+      task = await claimOne('waiting')
+      if (task) await auditionService.synthesize(task)
+    } catch (error) {
+      log?.error?.(`audition worker tick failed: ${error?.stack || error}`)
+    } finally {
+      if (task) await release(task.id)
+    }
+  }
+
+  return {
+    instanceId,
+
+    start() {
+      if (!stopped) return this
+      stopped = false
+      tick().catch(() => {})
+      timer = timers.setInterval(() => {
+        tick().catch(() => {})
+      }, intervalMs)
+      timer?.unref?.()
+      log?.info?.('audition worker started', { instanceId, intervalMs, leaseMs })
+      return this
+    },
+
+    stop() {
+      stopped = true
+      if (timer) timers.clearInterval(timer)
+      timer = null
+      return Promise.resolve()
+    },
+
+    /** Run one tick immediately (used by tests). */
+    runOnce: tick,
+
+    get running() {
+      return !stopped
+    }
+  }
+}

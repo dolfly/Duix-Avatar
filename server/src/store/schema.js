@@ -93,6 +93,27 @@ export const migrations = [
       // poll) for the worker's total-timeout sweep.
       `ALTER TABLE video ADD COLUMN started_at INTEGER`
     ]
+  },
+  {
+    // Audition (voice preview) tasks. The TTS synthesis takes minutes on the Pascal
+    // GPU, far beyond the EdgeOne 15s origin timeout, so auditions are queued and
+    // synthesised by a background worker (the same claim/lease pattern as `video`).
+    // NOTE: v5 is taken by DO-120 (started_at); audition therefore lands on v6.
+    version: 6,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS audition
+       (
+           id         INTEGER PRIMARY KEY AUTOINCREMENT,
+           voice_id   INTEGER,
+           text       TEXT,
+           status     TEXT,
+           message    TEXT,
+           file_path  TEXT,
+           created_at INTEGER,
+           claimed_by TEXT,
+           claimed_at INTEGER
+       )`
+    ]
   }
 ]
 

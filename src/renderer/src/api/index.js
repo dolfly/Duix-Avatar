@@ -182,8 +182,10 @@ const httpApi = {
       headers: JSON_HEADERS,
       body: JSON.stringify({ text })
     })
-    return result ? result.audioPath : ''
+    return result // { taskId, status: 'waiting' }
   },
+
+  auditionStatus: async (voiceId, taskId) => http(`/api/voices/${voiceId}/audition/${taskId}`),
 
   // The reference-audio preview lives behind auth, but an <audio> tag cannot send
   // the Authorization header. Fetch it with the token here and hand the component a
@@ -214,6 +216,7 @@ const ipcApi = {
   saveContext: (key, val) => ipcRenderer().invoke('context/save', key, val),
 
   audition: (voiceId, text) => ipcRenderer().invoke('voice/audition', voiceId, text),
+  auditionStatus: () => {},
   voicePreview: () => {}
 }
 
@@ -238,6 +241,7 @@ export const getContext = api.getContext
 export const saveContext = api.saveContext
 
 export const audition = api.audition
+export const auditionStatus = api.auditionStatus
 
 export const voicePreview = api.voicePreview
 
