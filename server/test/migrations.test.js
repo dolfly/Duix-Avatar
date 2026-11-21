@@ -23,7 +23,9 @@ describe('rqlite migrations', () => {
     expect(names).toEqual(expect.arrayContaining(['context', 'f2f_model', 'video', 'voice']))
 
     const videoColumns = (await store.query('PRAGMA table_info(video)')).map((row) => row.name)
-    expect(videoColumns).toEqual(expect.arrayContaining(['claimed_by', 'claimed_at', 'voice_id', 'duration']))
+    expect(videoColumns).toEqual(
+      expect.arrayContaining(['claimed_by', 'claimed_at', 'started_at', 'voice_id', 'duration'])
+    )
   })
 
   it('is idempotent when the schema is already current', async () => {

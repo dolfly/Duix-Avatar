@@ -7,6 +7,7 @@ import { migrate } from './store/schema.js'
 import { createContextDao, createModelDao, createVideoDao, createVoiceDao } from './dao/index.js'
 import { createMediaStore } from './media/index.js'
 import { createFace2faceClient, createTtsClient } from './integrations/clients.js'
+import { createVramGate } from './integrations/gpu.js'
 import { createContextService, createModelService, createVideoService, createVoiceService } from './services/index.js'
 import { createVideoWorker } from './services/worker.js'
 import { createApp } from './routes/index.js'
@@ -54,7 +55,10 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
         videoDao: daos.video,
         videoService: services.video,
         leaseMs: config.worker.leaseMs,
+        taskTimeoutMs: config.worker.taskTimeoutMs,
+        maxInflight: config.worker.maxInflight,
         intervalMs: config.worker.intervalMs,
+        gpuGate: createVramGate({ ...config.gpu, log }),
         log
       })
     : null

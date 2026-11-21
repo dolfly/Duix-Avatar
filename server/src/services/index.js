@@ -391,7 +391,10 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
 }
 
 function toVideoDto(row, { media, waitingIds = [] }) {
-  const status = row.status
+  // `submitting` (TTS + submit in progress) is an internal intermediate state the web UI
+  // does not know about; surface it as `pending` so the card shows "制作中" instead of a
+  // blank row during the minutes-long synthesis.
+  const status = row.status === 'submitting' ? 'pending' : row.status
   let progress = row.progress ?? 0
   if (status === 'waiting') {
     const index = waitingIds.indexOf(row.id)

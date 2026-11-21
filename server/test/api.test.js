@@ -356,6 +356,15 @@ describe('video API', () => {
     expect((await ctx.services.video.find(id)).status).toBe('waiting')
   })
 
+  it('surfaces the internal submitting state as pending (no blank card)', async () => {
+    const id = await createDraft({ voiceId: 1 })
+    await authed.post(`/api/videos/${id}/make`)
+    await store.execute("UPDATE video SET status = 'submitting' WHERE id = ?", [id])
+
+    const video = await ctx.services.video.find(id)
+    expect(video.status).toBe('pending')
+  })
+
   it('patches editable fields', async () => {
     const id = await createDraft()
     const response = await authed.patch(`/api/videos/${id}`).send({ name: '改名', textContent: '新的文案' })
