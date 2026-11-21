@@ -229,6 +229,13 @@ function createModelRouter(modelService, upload) {
   )
 
   router.get(
+    '/count',
+    h(async (req, res) => {
+      res.json({ count: await modelService.count(req.query.name || '') })
+    })
+  )
+
+  router.get(
     '/:id',
     h(async (req, res) => {
       const model = await modelService.find(req.params.id)

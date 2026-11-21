@@ -107,6 +107,10 @@ export function createModelService({ modelDao, voiceDao, tts, media, log, defaul
     }
   }
 
+  async function count(name = '') {
+    return modelDao.count(name)
+  }
+
   async function find(id) {
     const row = await modelDao.selectByID(id)
     if (!row) return null
@@ -122,7 +126,7 @@ export function createModelService({ modelDao, voiceDao, tts, media, log, defaul
     return true
   }
 
-  return { add, page, find, remove }
+  return { add, page, count, find, remove }
 }
 
 function toModelDto(row) {

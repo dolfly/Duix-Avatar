@@ -270,6 +270,23 @@ describe('model API', () => {
     expect(filtered.body.list[0].name).toBe('张三')
   })
 
+  it('counts models and filters the count by name', async () => {
+    await createModel('张三')
+    await createModel('李四')
+
+    const all = await authed.get('/api/models/count')
+    expect(all.status).toBe(200)
+    expect(all.body).toEqual({ count: 2 })
+
+    const filtered = await authed.get('/api/models/count?name=张')
+    expect(filtered.status).toBe(200)
+    expect(filtered.body).toEqual({ count: 1 })
+  })
+
+  it('requires a token for the count endpoint', async () => {
+    await expect(request(ctx.app).get('/api/models/count')).resolves.toMatchObject({ status: 401 })
+  })
+
   it('deletes the model together with its files', async () => {
     const id = await createModel()
     const model = await ctx.services.model.find(id)
