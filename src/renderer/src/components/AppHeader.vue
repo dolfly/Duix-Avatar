@@ -4,27 +4,42 @@
       <img class="logo" src="@renderer/assets/images/icons/logo.png" alt="logo" />
     </div>
     <div class="header-right">
-      <t-dropdown :maxColumnWidth="false" :min-column-width="88" panel-top-content="" placement="bottom-right"
-        @click="action.clickHandler">
-        <div class="header-right-item" style="width: 70px">
+      <div class="language-switch">
+        <span
+          class="language-switch__item"
+          :class="{ 'language-active': home.homeState.language === 'zh' }"
+          @click="action.changeLanguage('zh')"
+          >{{ $t('common.header.languageZhText') }}</span
+        >
+        <span class="language-switch__divider">/</span>
+        <span
+          class="language-switch__item"
+          :class="{ 'language-active': home.homeState.language === 'en' }"
+          @click="action.changeLanguage('en')"
+          >{{ $t('common.header.languageEnText') }}</span
+        >
+      </div>
+      <t-dropdown
+        v-if="state.username || isDesktop"
+        :maxColumnWidth="false"
+        :min-column-width="120"
+        placement="bottom-right"
+        @click="action.clickHandler"
+      >
+        <div v-if="state.username" class="header-right-item header-avatar">
+          <t-avatar class="header-avatar__img" :alt="state.username">{{ avatarChar }}</t-avatar>
+        </div>
+        <div v-else class="header-right-item" style="width: 70px">
           <img src="@renderer/assets/images/icons/setting.svg" alt="setting" />
           <div class="header-right-item-text">{{ $t('common.setting.title') }}</div>
         </div>
         <t-dropdown-menu>
-          <t-dropdown-item :value="item.value" v-for="(item, index) in state.menuList" :key="index + 'menuList'"
-            class="dropdown-box">
-            <div class="language-switch-box">
-              <span>{{ item.content }}</span>
-              <img v-if="item.value === 'languageSwitch'" src="@renderer/assets/images/icons/switch.svg" alt="switch"
-                class="language-switch" />
-            </div>
-
-            <t-dropdown-menu v-if="item.children">
-              <t-dropdown-item v-for="(itemChildren, indexChildren) in item.children"
-                :key="indexChildren + 'itemChildren'" :value="itemChildren.value"
-                :class="itemChildren.value === home.homeState.language ? 'language-active' : ''">{{ itemChildren.content
-                }}</t-dropdown-item>
-            </t-dropdown-menu>
+          <t-dropdown-item
+            v-for="(item, index) in state.menuList"
+            :key="index + 'menuList'"
+            :value="item.value"
+          >
+            {{ t(item.key) }}
           </t-dropdown-item>
         </t-dropdown-menu>
       </t-dropdown>
@@ -34,8 +49,11 @@
         </t-tooltip>
       </div>
       <div class="header-right-item" v-if="isDesktop" @click="action.maximize">
-        <t-tooltip :content="state.isMaximized ? $t('common.header.restoreText') : $t('common.header.minimizeText')
-          ">
+        <t-tooltip
+          :content="
+            state.isMaximized ? $t('common.header.restoreText') : $t('common.header.minimizeText')
+          "
+        >
           <img src="@renderer/assets/images/icons/maximize.png" />
         </t-tooltip>
       </div>
@@ -49,52 +67,31 @@
 </template>
 
 <script setup>
-import { reactive, watch } from 'vue'
+import { reactive, computed } from 'vue'
 import { Client, isDesktop } from '@renderer/client'
 import { useHomeStore } from '@renderer/stores/home.js'
 import { useI18n } from 'vue-i18n'
 import { saveContext } from '@renderer/api/index.js'
 import { lang_ } from '@renderer/utils/const.js'
+import { getUsername } from '@renderer/utils/auth.js'
+
 const { locale, t } = useI18n()
 const home = useHomeStore()
 const state = reactive({
   isMaximized: false,
+  username: getUsername(),
   menuList: [
     {
-      content: '用户协议',
       key: 'common.setting.tab.userAgreementText',
       value: 'agreement'
     },
     {
-      content: '打开日志',
       key: 'common.setting.tab.openLogText',
       value: 'openLog'
-    },
-    {
-      content: '语言切换',
-      value: 'languageSwitch',
-      key: 'common.setting.tab.languageSwitchText',
-      children: [
-        {
-          content: '中文',
-          key: 'common.setting.languageSwitch.languageZhText',
-          value: 'zh'
-        },
-        {
-          content: '英文',
-          key: 'common.setting.languageSwitch.languageEnText',
-          value: 'en'
-        }
-      ]
     }
   ]
 })
-watch(locale, () => {
-  state.menuList.forEach((el) => {
-    el.content = t(el.key)
-    if (el.children) el.children.forEach((item) => (item.content = t(item.key)))
-  })
-})
+const avatarChar = computed(() => (state.username ? state.username.slice(0, 1).toUpperCase() : ''))
 const action = {
   init() {
     action.setIsMaximized()
@@ -113,17 +110,18 @@ const action = {
   close() {
     Client.app.close()
   },
+  changeLanguage(value) {
+    if (value !== 'zh' && value !== 'en') return
+    window.localStorage.setItem('language', value)
+    locale.value = value
+    home.setLanguage(value)
+    saveContextAjax(value)
+  },
   clickHandler({ value }) {
     if (value === 'agreement') {
       home.setAgreementVisible(true)
     } else if (value === 'openLog') {
       Client.app.openLog()
-    } else {
-      if (value === 'languageSwitch') return
-      window.localStorage.setItem('language', value)
-      locale.value = value
-      saveContextAjax(value)
-      home.setLanguage(value)
     }
   }
 }
@@ -136,25 +134,45 @@ const saveContextAjax = async (lang) => {
   }
 }
 </script>
-<style>
-.dropdown-box .t-icon-chevron-right {
-  display: none !important;
-}
-
-.language-active {
-  color: #166aff !important;
-}
-
-.t-dropdown__item-text .language-switch {
-  width: 16px;
-  display: block;
-  margin-left: 14px;
-}
-</style>
 
 <style lang="less" scoped>
-.language-switch-box {
+.language-switch {
+  -webkit-app-region: no-drag;
+  height: 30px;
   display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 12px;
+  color: #000000;
+  user-select: none;
+
+  &__item {
+    cursor: pointer;
+    line-height: 14px;
+
+    &:hover {
+      color: #166aff;
+    }
+  }
+
+  &__divider {
+    margin: 0 4px;
+    color: #c5c5c5;
+  }
+
+  .language-active {
+    color: #166aff;
+    font-weight: 500;
+  }
+}
+
+.header-avatar {
+  &__img {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    font-size: 14px;
+  }
 }
 
 .header {
@@ -201,18 +219,20 @@ const saveContextAjax = async (lang) => {
         background-color: #f2f2f4;
       }
 
+      img {
+        width: 20px;
+        height: 20px;
+      }
+
       &-text {
-        font-family: PingFang SC, PingFang SC;
+        font-family:
+          PingFang SC,
+          PingFang SC;
         font-weight: 400;
         font-size: 12px;
         color: #000000;
         line-height: 14px;
         text-align: left;
-      }
-
-      img {
-        width: 20px;
-        height: 20px;
       }
     }
   }

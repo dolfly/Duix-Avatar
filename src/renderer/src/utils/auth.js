@@ -7,9 +7,23 @@
  */
 
 const TOKEN_KEY = 'duix.auth.token'
+const USERNAME_KEY = 'duix.auth.username'
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY) || ''
+}
+
+export function getUsername() {
+  return localStorage.getItem(USERNAME_KEY) || ''
+}
+
+export function setUsername(username) {
+  if (username) localStorage.setItem(USERNAME_KEY, username)
+  else localStorage.removeItem(USERNAME_KEY)
+}
+
+export function clearUsername() {
+  localStorage.removeItem(USERNAME_KEY)
 }
 
 export function setToken(token) {

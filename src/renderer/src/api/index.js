@@ -12,7 +12,7 @@
  * - `exportVideo` streams the file into a browser download.
  */
 import { isDesktop } from '@renderer/client'
-import { clearToken, getToken } from '@renderer/utils/auth.js'
+import { clearToken, clearUsername, getToken } from '@renderer/utils/auth.js'
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
 
@@ -31,6 +31,7 @@ function redirectToLoginIfUnauthorized(response, url) {
   if (response.status !== 401) return
   if (String(url).includes('/api/auth/login')) return
   clearToken()
+  clearUsername()
   if (window.location.hash !== '#/login') window.location.hash = '#/login'
 }
 
