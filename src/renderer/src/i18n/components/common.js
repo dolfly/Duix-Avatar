@@ -13,7 +13,9 @@ export const commonZh = {
     minimizeText: '最小化',
     maximizeText: '最大化',
     restoreText: '还原',
-    closeText: '关闭'
+    closeText: '关闭',
+    languageZhText: '中文',
+    languageEnText: 'English'
   },
   tab: {
     myWorksText: '我的作品',
@@ -164,7 +166,9 @@ export const commonEn = {
     minimizeText: 'Minimize',
     maximizeText: 'Maximize',
     restoreText: 'Restore',
-    closeText: 'Close'
+    closeText: 'Close',
+    languageZhText: '中文',
+    languageEnText: 'English'
   },
   tab: {
     myWorksText: 'My Works',

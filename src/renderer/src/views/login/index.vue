@@ -2,7 +2,7 @@
 import { reactive, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { setToken } from '@renderer/utils/auth.js'
+import { setToken, setUsername } from '@renderer/utils/auth.js'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -31,6 +31,7 @@ async function submit() {
       return
     }
     setToken(body.token)
+    setUsername(form.username.trim())
     const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
       ? route.query.redirect
       : '/home'
