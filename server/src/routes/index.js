@@ -170,7 +170,7 @@ export function createApp({ services, media, config, logger, worker, rqlite, aut
   app.use('/api/context', createContextRouter(services.context))
   app.use('/api/models', createModelRouter(services.model, upload))
   app.use('/api/videos', createVideoRouter(services.video, upload, media))
-  app.use('/api/voices', createVoiceRouter(services.voice))
+  app.use('/api/voices', createVoiceRouter(services.voice, services.audition))
 
   app.use('/api', (req, res) => {
     res.status(404).json({ code: 404, message: `接口不存在: ${req.method} ${req.originalUrl}` })
@@ -394,7 +394,7 @@ function createVideoRouter(videoService, upload, media) {
   return router
 }
 
-function createVoiceRouter(voiceService) {
+function createVoiceRouter(voiceService, auditionService) {
   const router = express.Router()
 
   router.get(
@@ -423,22 +423,28 @@ function createVoiceRouter(voiceService) {
     })
   )
 
+  // Audition is queued instead of synthesised inline: TTS takes minutes on the Pascal
+  // GPU, far beyond the EdgeOne 15s origin timeout. The route returns 202 with a task id
+  // immediately, and the background worker fills in the audio via the status endpoint.
   router.post(
     '/:id/audition',
     express.json(),
     h(async (req, res) => {
-      const voice = await voiceService.find(req.params.id)
-      if (!voice) {
-        res.status(404).json({ code: 404, message: '音色不存在' })
-        return
-      }
       const text = String(req.body?.text ?? req.query.text ?? '')
-      if (!text) {
-        res.status(400).json({ code: 400, message: '试听文本不能为空' })
+      const taskId = await auditionService.create({ voiceId: Number(req.params.id), text })
+      res.status(202).json({ taskId, status: 'waiting' })
+    })
+  )
+
+  router.get(
+    '/:id/audition/:taskId',
+    h(async (req, res) => {
+      const task = await auditionService.find(Number(req.params.taskId))
+      if (!task || Number(task.voice_id) !== Number(req.params.id)) {
+        res.status(404).json({ code: 404, message: '试听任务不存在' })
         return
       }
-      const audioPath = await voiceService.makeAudio({ voice, text })
-      res.json({ audioPath: `/api/files/${audioPath}`, fileName: path.basename(audioPath) })
+      res.json(task)
     })
   )
 

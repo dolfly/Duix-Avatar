@@ -4,11 +4,11 @@ import { loadConfig } from './config.js'
 import { createLogger } from './logger.js'
 import { RqliteClient } from './store/rqlite.js'
 import { migrate } from './store/schema.js'
-import { createContextDao, createModelDao, createVideoDao, createVoiceDao } from './dao/index.js'
+import { createContextDao, createModelDao, createVideoDao, createVoiceDao, createAuditionDao } from './dao/index.js'
 import { createMediaStore } from './media/index.js'
 import { createFace2faceClient, createTtsClient } from './integrations/clients.js'
-import { createContextService, createModelService, createVideoService, createVoiceService } from './services/index.js'
-import { createVideoWorker } from './services/worker.js'
+import { createContextService, createModelService, createVideoService, createVoiceService, createAuditionService } from './services/index.js'
+import { createVideoWorker, createAuditionWorker } from './services/worker.js'
 import { createApp } from './routes/index.js'
 import { createAuthService } from './auth.js'
 
@@ -29,7 +29,8 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
     context: createContextDao(rqlite),
     model: createModelDao(rqlite),
     voice: createVoiceDao(rqlite),
-    video: createVideoDao(rqlite)
+    video: createVideoDao(rqlite),
+    audition: createAuditionDao(rqlite)
   }
   const tts = ttsClient || createTtsClient({ ...config.tts, log })
   const face2face = face2faceClient || createFace2faceClient({ ...config.face2face, log })
@@ -39,6 +40,11 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
     model: createModelService({ modelDao: daos.model, voiceDao: daos.voice, tts, media, log }),
     voice: createVoiceService({ voiceDao: daos.voice, tts, media, log })
   }
+  services.audition = createAuditionService({
+    auditionDao: daos.audition,
+    voiceService: services.voice,
+    log
+  })
   services.video = createVideoService({
     videoDao: daos.video,
     modelDao: daos.model,
@@ -59,6 +65,18 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
       })
     : null
 
+  // Audition synthesis takes minutes, so its lease matches the TTS timeout rather than
+  // the (short) video lease; a shorter lease would let a task be re-claimed mid-TTS.
+  const auditionWorker = config.worker.enabled
+    ? createAuditionWorker({
+        auditionDao: daos.audition,
+        auditionService: services.audition,
+        leaseMs: config.tts.timeoutMs,
+        intervalMs: config.worker.intervalMs,
+        log
+      })
+    : null
+
   const auth = createAuthService({
     username: config.auth.username,
     passwordHash: config.auth.passwordHash
@@ -66,12 +84,12 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
 
   const app = createApp({ services, media, config, logger: log, worker, rqlite, auth })
 
-  return { config, log, media, rqlite, daos, services, worker, auth, app }
+  return { config, log, media, rqlite, daos, services, worker, auditionWorker, auth, app }
 }
 
 async function main() {
   const context = buildContext()
-  const { config, log, rqlite, worker, app } = context
+  const { config, log, rqlite, worker, auditionWorker, app } = context
 
   log.info('starting duix-avatar server', {
     dataDir: config.dataDir,
@@ -84,6 +102,7 @@ async function main() {
   log.info('rqlite schema ready')
 
   if (worker) worker.start()
+  if (auditionWorker) auditionWorker.start()
 
   const server = http.createServer(app)
   server.listen(config.port, config.host, () => {
@@ -93,6 +112,7 @@ async function main() {
   const shutdown = (signal) => {
     log.info(`${signal} received, shutting down`)
     if (worker) worker.stop()
+    if (auditionWorker) auditionWorker.stop()
     server.close(() => {
       log.info('bye')
       process.exit(0)

@@ -96,6 +96,69 @@ export function createVoiceDao(store) {
   }
 }
 
+const AUDITION_COLUMNS = new Set(['voice_id', 'text', 'status', 'message', 'file_path'])
+
+export function createAuditionDao(store) {
+  return {
+    insert({ voiceId, text }) {
+      return store
+        .execute(
+          `INSERT INTO audition (voice_id, text, status, message, file_path, created_at)
+           VALUES (?, ?, 'waiting', '', '', ?)`,
+          [voiceId, text, Date.now()]
+        )
+        .then((result) => Number(result.lastInsertId))
+    },
+
+    selectByID(id) {
+      return store.queryOne('SELECT * FROM audition WHERE id = ?', [id])
+    },
+
+    findFirstByStatus(status) {
+      return store.queryOne('SELECT * FROM audition WHERE status = ? ORDER BY id ASC LIMIT 1', [status])
+    },
+
+    update(id, fields) {
+      const columns = Object.keys(fields).filter((column) => AUDITION_COLUMNS.has(column))
+      if (!columns.length) return Promise.resolve({ rowsAffected: 0 })
+      return store.execute(
+        `UPDATE audition SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE id = ?`,
+        [...columns.map((column) => serialize(fields[column])), id]
+      )
+    },
+
+    updateStatus(id, status, message = '', filePath = '') {
+      return store.execute(
+        `UPDATE audition SET status = ?, message = ?, file_path = ? WHERE id = ?`,
+        [status, message, filePath, id]
+      )
+    },
+
+    /**
+     * Atomically lease a task, mirroring `createVideoDao.claim`. Returns true when
+     * this instance won the claim.
+     */
+    async claim(id, { claimedBy, leaseMs, status, now = Date.now() }) {
+      const result = await store.execute(
+        `UPDATE audition
+            SET claimed_by = ?, claimed_at = ?
+          WHERE id = ?
+            AND status = ?
+            AND (claimed_by IS NULL OR claimed_at IS NULL OR claimed_at < ?)`,
+        [claimedBy, now, id, status, now - leaseMs]
+      )
+      return Number(result.rowsAffected) === 1
+    },
+
+    release(id, claimedBy) {
+      return store.execute(
+        'UPDATE audition SET claimed_by = NULL, claimed_at = NULL WHERE id = ? AND claimed_by = ?',
+        [id, claimedBy]
+      )
+    }
+  }
+}
+
 export function createVideoDao(store) {
   return {
     insert(video) {
@@ -199,4 +262,4 @@ function serialize(value) {
   return value
 }
 
-export default { createContextDao, createModelDao, createVoiceDao, createVideoDao }
+export default { createContextDao, createModelDao, createVoiceDao, createAuditionDao, createVideoDao }

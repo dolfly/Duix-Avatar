@@ -84,6 +84,26 @@ export const migrations = [
       `ALTER TABLE video ADD COLUMN claimed_by TEXT`,
       `ALTER TABLE video ADD COLUMN claimed_at INTEGER`
     ]
+  },
+  {
+    // Audition (voice preview) tasks. The TTS synthesis takes minutes on the Pascal
+    // GPU, far beyond the EdgeOne 15s origin timeout, so auditions are queued and
+    // synthesised by a background worker (the same claim/lease pattern as `video`).
+    version: 5,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS audition
+       (
+           id         INTEGER PRIMARY KEY AUTOINCREMENT,
+           voice_id   INTEGER,
+           text       TEXT,
+           status     TEXT,
+           message    TEXT,
+           file_path  TEXT,
+           created_at INTEGER,
+           claimed_by TEXT,
+           claimed_at INTEGER
+       )`
+    ]
   }
 ]
 
