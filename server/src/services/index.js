@@ -189,6 +189,59 @@ export function createVoiceService({ voiceDao, tts, media, log }) {
   return { list, find, referenceAudioPath, makeAudio }
 }
 
+/**
+ * Audition (voice preview) tasks. `POST /api/voices/:id/audition` enqueues a task and
+ * returns immediately; a background worker runs `synthesize` so the HTTP request never
+ * outlives the EdgeOne 15s origin timeout (TTS takes minutes on the Pascal GPU).
+ */
+export function createAuditionService({ auditionDao, voiceService, log }) {
+  async function create({ voiceId, text }) {
+    const voice = await voiceService.find(voiceId)
+    if (!voice) throw httpError(404, '音色不存在')
+    if (!text) throw httpError(400, '试听文本不能为空')
+    return auditionDao.insert({ voiceId, text })
+  }
+
+  async function find(id) {
+    return toAuditionDto(await auditionDao.selectByID(id))
+  }
+
+  /** Synthesise the text for a claimed audition task. */
+  async function synthesize(task) {
+    await auditionDao.update(task.id, { message: '正在生成试听音频' })
+    try {
+      const voice = await voiceService.find(task.voice_id)
+      if (!voice) {
+        await auditionDao.updateStatus(task.id, 'failed', '音色不存在')
+        return { status: 'failed' }
+      }
+      const relative = await voiceService.makeAudio({ voice, text: task.text })
+      await auditionDao.update(task.id, { status: 'success', message: '', file_path: relative })
+      return { status: 'success', filePath: relative }
+    } catch (error) {
+      log?.error?.(`audition ${task.id} 生成失败: ${error?.message || error}`)
+      await auditionDao.updateStatus(task.id, 'failed', error?.message || '试听生成失败')
+      return { status: 'failed' }
+    }
+  }
+
+  return { create, find, synthesize }
+}
+
+function toAuditionDto(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    voice_id: row.voice_id,
+    text: row.text,
+    status: row.status,
+    message: row.message,
+    created_at: row.created_at,
+    audioPath: row.status === 'success' && row.file_path ? `/api/files/${row.file_path}` : null,
+    file_name: row.file_path || null
+  }
+}
+
 export function createVideoService({ videoDao, modelDao, voiceService, media, tts, face2face, log }) {
   async function page({ page = 1, pageSize = 10, name = '' } = {}) {
     const [total, rows, waiting] = await Promise.all([

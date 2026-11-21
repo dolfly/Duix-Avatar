@@ -8,7 +8,7 @@ import request from 'supertest'
 import { buildContext } from '../src/index.js'
 import { createLogger } from '../src/logger.js'
 import { migrate } from '../src/store/schema.js'
-import { createVideoWorker } from '../src/services/worker.js'
+import { createVideoWorker, createAuditionWorker } from '../src/services/worker.js'
 import { SqliteStore } from './helpers/sqlite-store.js'
 
 /**
@@ -511,17 +511,78 @@ describe('voice API', () => {
     expect(response.headers['content-type']).toMatch(/audio/)
   })
 
-  it('auditions text with a cloned voice', async () => {
+  it('auditions text asynchronously and exposes the generated audio', async () => {
     await createModel()
-    const response = await authed.post('/api/voices/1/audition').send({ text: '试听一下' })
-    expect(response.status).toBe(200)
-    expect(response.body.audioPath).toMatch(/^\/api\/files\/temp\/.+\.wav$/)
-    expect(fs.existsSync(path.join(dataDir, 'face2face', 'temp', response.body.fileName))).toBe(true)
+
+    // The audition is queued and must return immediately (202), never waiting on the
+    // minutes-long TTS call.
+    const queued = await authed.post('/api/voices/1/audition').send({ text: '试听一下' })
+    expect(queued.status).toBe(202)
+    expect(queued.body).toMatchObject({ status: 'waiting' })
+    const taskId = queued.body.taskId
+
+    // Before the worker runs, the task is still waiting with no audio.
+    const pending = await authed.get(`/api/voices/1/audition/${taskId}`)
+    expect(pending.status).toBe(200)
+    expect(pending.body.status).toBe('waiting')
+    expect(pending.body.audioPath).toBeNull()
+
+    // The background worker synthesises the audio.
+    const auditionWorker = createAuditionWorker({
+      auditionDao: ctx.daos.audition,
+      auditionService: ctx.services.audition,
+      log: SILENT,
+      leaseMs: 60000
+    })
+    await auditionWorker.runOnce()
+
+    const done = await authed.get(`/api/voices/1/audition/${taskId}`)
+    expect(done.status).toBe(200)
+    expect(done.body.status).toBe('success')
+    expect(done.body.audioPath).toMatch(/^\/api\/files\/temp\/.+\.wav$/)
+    expect(fs.existsSync(path.join(dataDir, 'face2face', done.body.file_name))).toBe(true)
+  })
+
+  it('lets only one instance synthesise the same audition task', async () => {
+    await createModel()
+    const queued = await authed.post('/api/voices/1/audition').send({ text: '试听一下' })
+    const taskId = queued.body.taskId
+
+    const workerA = createAuditionWorker({
+      auditionDao: ctx.daos.audition,
+      auditionService: ctx.services.audition,
+      log: SILENT,
+      leaseMs: 60000
+    })
+    const workerB = createAuditionWorker({
+      auditionDao: ctx.daos.audition,
+      auditionService: ctx.services.audition,
+      log: SILENT,
+      leaseMs: 60000
+    })
+
+    await Promise.all([workerA.runOnce(), workerB.runOnce()])
+
+    const rows = await store.query('SELECT * FROM audition')
+    expect(rows).toHaveLength(1)
+    const claims = await store.query('SELECT claimed_by, claimed_at FROM audition WHERE id = ?', [taskId])
+    expect(claims[0].claimed_by).toBeNull()
   })
 
   it('rejects audition requests without text', async () => {
     await createModel()
     await expect(authed.post('/api/voices/1/audition').send({})).resolves.toMatchObject({ status: 400 })
+  })
+
+  it('rejects audition requests for an unknown voice', async () => {
+    await expect(authed.post('/api/voices/999/audition').send({ text: 'x' })).resolves.toMatchObject({
+      status: 404
+    })
+  })
+
+  it('returns 404 for an unknown audition task', async () => {
+    await createModel()
+    await expect(authed.get('/api/voices/1/audition/999')).resolves.toMatchObject({ status: 404 })
   })
 })
 

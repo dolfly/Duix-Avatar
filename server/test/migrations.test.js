@@ -20,10 +20,13 @@ describe('rqlite migrations', () => {
 
     const tables = await store.query(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
     const names = tables.map((row) => row.name)
-    expect(names).toEqual(expect.arrayContaining(['context', 'f2f_model', 'video', 'voice']))
+    expect(names).toEqual(expect.arrayContaining(['context', 'f2f_model', 'video', 'voice', 'audition']))
 
     const videoColumns = (await store.query('PRAGMA table_info(video)')).map((row) => row.name)
     expect(videoColumns).toEqual(expect.arrayContaining(['claimed_by', 'claimed_at', 'voice_id', 'duration']))
+
+    const auditionColumns = (await store.query('PRAGMA table_info(audition)')).map((row) => row.name)
+    expect(auditionColumns).toEqual(expect.arrayContaining(['voice_id', 'text', 'status', 'file_path', 'claimed_by', 'claimed_at']))
   })
 
   it('is idempotent when the schema is already current', async () => {
