@@ -76,12 +76,14 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
     : null
 
   // Audition synthesis takes minutes, so its lease matches the TTS timeout rather than
-  // the (short) video lease; a shorter lease would let a task be re-claimed mid-TTS.
+  // the (short) video lease. The +60s margin ensures the lease outlives the TTS call
+  // even when it runs right up to its own timeout, so another tick can't re-claim the
+  // still-`waiting` task mid-flight and synthesise it twice.
   const auditionWorker = config.worker.enabled
     ? createAuditionWorker({
         auditionDao: daos.audition,
         auditionService: services.audition,
-        leaseMs: config.tts.timeoutMs,
+        leaseMs: config.tts.timeoutMs + 60000,
         intervalMs: config.worker.intervalMs,
         log
       })

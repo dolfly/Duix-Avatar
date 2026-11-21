@@ -37,9 +37,27 @@ import EditTextSpeaker from './EditTextSpeaker.vue';
 import { useI18n } from 'vue-i18n'
 import { isDesktop } from '@renderer/client'
 import { audition, auditionStatus } from '@renderer/api'
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+// Local i18n for the audition flow. Kept in this component so it doesn't collide with
+// the shared i18n/common.js file, which is owned by the parallel DO-115 task.
+const auditionMessages = {
+  zh: {
+    creatingFailed: '试听任务创建失败',
+    failed: '试听失败',
+    generating: '音频生成中，请稍候…',
+    timeout: '试听超时，请稍后重试'
+  },
+  en: {
+    creatingFailed: 'Failed to create the preview task',
+    failed: 'Preview failed',
+    generating: 'Generating audio, please wait…',
+    timeout: 'Preview timed out, please try again'
+  }
+}
+const auditionText = (key) => auditionMessages[locale.value]?.[key] || auditionMessages.zh[key]
 
 const select = defineModel({})
 
@@ -82,7 +100,11 @@ const action = {
         // until the task finishes, keeping the button in a loading state the whole
         // time so the user never sees a silent 524.
         const { taskId } = await audition(speaker.voice_id, text)
-        if (!taskId) throw new Error('试听任务创建失败')
+        if (!taskId) throw new Error(auditionText('creatingFailed'))
+        // Hard cap so a wedged task (e.g. worker not running) can't spin forever.
+        // TTS itself is bounded by the server timeout (~15 min), so 20 min covers
+        // every legitimate synthesis with margin.
+        const deadline = Date.now() + 20 * 60 * 1000
         for (;;) {
           await sleep(1500)
           const task = await auditionStatus(speaker.voice_id, taskId)
@@ -90,8 +112,9 @@ const action = {
             audioUrl = task.audioPath
             break
           }
-          if (task.status === 'failed') throw new Error(task.message || '试听失败')
-          state.auditionHint = task.message || '音频生成中，请稍候…'
+          if (task.status === 'failed') throw new Error(task.message || auditionText('failed'))
+          if (Date.now() > deadline) throw new Error(auditionText('timeout'))
+          state.auditionHint = auditionText('generating')
         }
       }
 
@@ -103,7 +126,7 @@ const action = {
       })
     } catch (err) {
       console.error('文本转音频失败', err)
-      MessagePlugin.error(err.toString() || '试听失败')
+      MessagePlugin.error(err?.message || auditionText('failed'))
     } finally {
       state.textToAudioLoading = false
       state.auditionHint = ''
