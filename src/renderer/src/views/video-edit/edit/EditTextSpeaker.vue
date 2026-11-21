@@ -63,7 +63,11 @@ const state = reactive({
   playingId: '',
   status: AUDIO_STATUS.UNPLAY,
   speakerList: [],
-  blobUrl: ''
+  blobUrl: '',
+  // Monotonic sequence for the in-flight play request. `stopAudio` and each new
+  // play bump it, so a stale fetch that resolves late can detect it is no longer
+  // current and drop itself without touching the active blob/audio.
+  requestSeq: 0
 })
 
 
@@ -107,6 +111,8 @@ const action = {
   },
 
   stopAudio() {
+    // Invalidate any in-flight play request so its late resolution is discarded.
+    state.requestSeq += 1
     audio.pause()
     audio.currentTime = 0
     state.playingId = ''
@@ -116,6 +122,10 @@ const action = {
     }
   },
   async playAudio(speaker) {
+    // Claim the current request slot. A second click or a stop bumps the sequence
+    // and makes this request stale.
+    const seq = state.requestSeq + 1
+    state.requestSeq = seq
     state.playingId = speaker.id
     try {
       // Desktop: absolute filesystem path → file:// URL (ipcApi stays untouched).
@@ -125,14 +135,23 @@ const action = {
         audio.src = localUrl.addFileProtocol(speaker.audio_path)
       } else {
         const url = await voicePreview(speaker.audio_path)
+        // Stale completion guard: a newer play/stop superseded this request. Drop
+        // it and revoke only OUR blob — never the blob currently in use.
+        if (seq !== state.requestSeq) {
+          URL.revokeObjectURL(url)
+          return
+        }
         if (state.blobUrl) URL.revokeObjectURL(state.blobUrl)
         state.blobUrl = url
         audio.src = url
       }
       await audio.play()
     } catch (err) {
-      action.stopAudio()
+      // Only the still-current request reports errors; a superseded one already
+      // returned above and must not flip the UI back.
+      if (seq !== state.requestSeq) return
       const message = err && err.message
+      action.stopAudio()
       if (message && /参考音频不存在|音色不存在|不存在/.test(message)) {
         MessagePlugin.error(t('common.editView.noReferenceAudio'))
       } else {
@@ -147,7 +166,10 @@ const action = {
       MessagePlugin.error(t('common.editView.noReferenceAudio'))
       return
     }
-    if (state.playingId === speaker.id) {
+    // Toggle only when this voice is actually playing (not merely requested); a
+    // pending fetch has `audio.paused` true, so a second click restarts it cleanly
+    // instead of leaving sound playing under a play-state button.
+    if (state.playingId === speaker.id && !audio.paused && !audio.ended) {
       action.stopAudio()
     } else {
       action.playAudio(speaker)
