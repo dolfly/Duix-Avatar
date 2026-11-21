@@ -23,8 +23,11 @@ services:
     container_name: duix-avatar-asr
     restart: always
     runtime: nvidia
-    privileged: true
     working_dir: /workspace/FunASR/runtime
+    environment:
+      # Without privileged, the GPU is selected by NVIDIA_VISIBLE_DEVICES; keep a single
+      # explicit card so multi-GPU hosts don't hand the wrong one to FunASR.
+      - NVIDIA_VISIBLE_DEVICES=0
     ports:
       - '10095:10095'
     command: sh /run.sh
@@ -33,7 +36,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 1
               capabilities: [gpu]
     networks:
       - ai_network
@@ -42,11 +45,11 @@ services:
     container_name: duix-avatar-gen-video
     restart: always
     runtime: nvidia
-    privileged: true
     volumes:
       - d:/duix_avatar_data/face2face:/code/data
     environment:
       - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+      - NVIDIA_VISIBLE_DEVICES=0
     deploy:
       resources:
         reservations:

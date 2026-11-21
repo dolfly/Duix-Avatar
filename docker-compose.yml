@@ -69,9 +69,23 @@ services:
       RQLITE_LEVEL: ${RQLITE_LEVEL:-weak}
       TTS_BASE_URL: ${TTS_BASE_URL:-http://duix-tts:8080}
       FACE2FACE_BASE_URL: ${FACE2FACE_BASE_URL:-http://duix-gen-video:8383/easy}
-      # Path prefixes the GPU containers see for the same files.
-      TTS_REMOTE_DATA_ROOT: /code/data
+      # Path prefix the server sends to the TTS service in `reference_audio`. The upstream
+      # TTS image prepends its own media_path `/code/data` (config/config.py) to this value,
+      # so it must be a leading-slash path RELATIVE to that root. With `/` the server sends
+      # `/origin_audio/x.wav` and the image turns it into `/code/data/origin_audio/x.wav`.
+      # Do NOT set `/code/data` here: the image double-prefixes it to `/code/data/code/data/...`
+      # and every voice clone fails with "file not exists".
+      TTS_REMOTE_DATA_ROOT: ${TTS_REMOTE_DATA_ROOT:-/}
+      # gen-video consumes the path as-is (no double prefix), so /code/data stays correct.
       FACE2FACE_REMOTE_DATA_ROOT: /code/data
+      # Web login (DO-84). duix-server refuses to start without credentials (fail fast).
+      # The scrypt hash contains `$` separators that compose would interpolate away, so in
+      # .env they must be doubled (`$$`); the hash-generation command in .env.example emits
+      # the already-escaped value. AUTH_PASSWORD is the plaintext alternative (hashed at
+      # startup, never stored) - prefer AUTH_PASSWORD_HASH.
+      AUTH_USERNAME: ${AUTH_USERNAME:-}
+      AUTH_PASSWORD_HASH: ${AUTH_PASSWORD_HASH:-}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
       # Optional: address the stack is published on, used only for documentation/links.
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       WORKER_ENABLED: ${WORKER_ENABLED:-true}
@@ -109,6 +123,11 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,graphics,utility,video,display
     volumes:
       - ${DATA_DIR:-./data}/voice/data:/code/data
+      # Override the upstream image's FunASR websocket client: bump rcg.close(timeout=3)
+      # to 30s so slower GPUs (e.g. Pascal P4000) don't drop the transcription of 10-16s
+      # reference audio. Upstream file is /code/asr_fun.py; re-verify after upgrading the
+      # image tag (see deploy/patches/asr_fun.py and doc/web-deployment.md).
+      - ./deploy/patches/asr_fun.py:/code/asr_fun.py:ro
     command: /bin/bash -c "/opt/conda/envs/python310/bin/python3 tools/api_server.py --listen 0.0.0.0:8080"
     ports:
       - '127.0.0.1:${TTS_PORT:-18180}:8080'
@@ -120,7 +139,6 @@ services:
     container_name: duix-gen-video
     restart: unless-stopped
     runtime: ${GPU_RUNTIME:-nvidia}
-    privileged: true
     environment:
       - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
       - NVIDIA_VISIBLE_DEVICES=${GPU_IDS:-0}
@@ -134,21 +152,30 @@ services:
     networks:
       - duix_net
 
-  # Upstream's ASR image. This client never calls it (TTS runs with need_asr=false), so it is
-  # opt-in and costs no GPU memory by default:
-  #   docker compose --profile asr up -d
+  # Upstream's ASR image. Voice cloning (POST /api/models -> TTS /v1/preprocess_and_tran)
+  # depends on this service: the TTS image's config.py hardcodes is_local = True and ignores
+  # need_asr, so it always dials the FunASR websocket. It therefore starts with the default
+  # stack (no profile) and is reachable by the alias below.
   duix-asr:
     image: ${ASR_IMAGE:-ghcr.io/dolfly/duix-avatar-asr:latest}
     container_name: duix-asr
     restart: unless-stopped
-    profiles: ['asr']
     runtime: ${GPU_RUNTIME:-nvidia}
     working_dir: /workspace/FunASR/runtime
+    environment:
+      # Same GPU filtering as duix-tts/duix-gen-video: on multi-GPU hosts pick the card that
+      # supports the models; without it the nvidia runtime defaults to all cards.
+      - NVIDIA_VISIBLE_DEVICES=${GPU_IDS:-0}
     command: sh /run.sh
     ports:
       - '127.0.0.1:${ASR_PORT:-10095}:10095'
     networks:
-      - duix_net
+      duix_net:
+        # The TTS image's config.py hardcodes `fun_asr_host = 'duix-avatar-asr'`, which is
+        # not this service's name (`duix-asr`), so register that alias for the TTS -> ASR
+        # websocket to resolve.
+        aliases:
+          - duix-avatar-asr
 
 networks:
   duix_net:

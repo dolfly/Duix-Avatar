@@ -8,11 +8,11 @@ services:
     container_name: duix-avatar-gen-video
     restart: always
     runtime: nvidia
-    privileged: true
     volumes:
       - d:/duix_avatar_data/face2face:/code/data
     environment:
       - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+      - NVIDIA_VISIBLE_DEVICES=0
     deploy:
       resources:
         reservations:
