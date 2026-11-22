@@ -58,7 +58,9 @@ export const commonZh = {
     emptyRightText: '开始制作模特',
     inProgressText: '训练中',
     createVideoText: '做视频',
-    previewText: '预览'
+    previewText: '预览',
+    recentlyUsedTabText: '最近使用',
+    rapidCustomizationTabText: '极速定制'
   },
   deleteDialog: {
     buttonTextLeft: '取消',
@@ -100,6 +102,7 @@ export const commonZh = {
   modelCreateView: {
     headerTitle: '极速定制',
     submitButtonText: '提交定制',
+    processingText: '正在定制中，请稍候（声音克隆约需 1-2 分钟）',
     avatarNameText: '模特名称',
     isUploading: '正在上传中...',
     tipsText: '点击上传拍摄好的原始视频',
@@ -232,7 +235,9 @@ export const commonEn = {
     emptyRightText: 'to start making a Avatar.',
     inProgressText: 'In Progress',
     createVideoText: 'Create Video',
-    previewText: 'Preview'
+    previewText: 'Preview',
+    recentlyUsedTabText: 'Recently Used',
+    rapidCustomizationTabText: 'Rapid customization'
   },
   deleteDialog: {
     buttonTextLeft: 'Cancel',
@@ -274,6 +279,7 @@ export const commonEn = {
   modelCreateView: {
     headerTitle: 'Rapid customization',
     submitButtonText: 'Submit',
+    processingText: 'Creating your avatar, please wait (voice cloning takes about 1-2 minutes)',
     avatarNameText: 'Avatar Name',
     isUploading: 'Uploading...',
     tipsText: 'Click to Upload the Video',

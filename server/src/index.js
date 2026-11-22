@@ -4,12 +4,12 @@ import { loadConfig } from './config.js'
 import { createLogger } from './logger.js'
 import { RqliteClient } from './store/rqlite.js'
 import { migrate } from './store/schema.js'
-import { createContextDao, createModelDao, createVideoDao, createVoiceDao, createAuditionDao } from './dao/index.js'
+import { createContextDao, createModelDao, createVideoDao, createVoiceDao, createAuditionDao, createModelTaskDao } from './dao/index.js'
 import { createMediaStore } from './media/index.js'
 import { createFace2faceClient, createTtsClient } from './integrations/clients.js'
 import { createVramGate } from './integrations/gpu.js'
 import { createContextService, createModelService, createVideoService, createVoiceService, createAuditionService } from './services/index.js'
-import { createVideoWorker, createAuditionWorker } from './services/worker.js'
+import { createVideoWorker, createAuditionWorker, createModelTaskWorker } from './services/worker.js'
 import { createApp } from './routes/index.js'
 import { createAuthService } from './auth.js'
 
@@ -31,20 +31,23 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
     model: createModelDao(rqlite),
     voice: createVoiceDao(rqlite),
     video: createVideoDao(rqlite),
-    audition: createAuditionDao(rqlite)
+    audition: createAuditionDao(rqlite),
+    modelTask: createModelTaskDao(rqlite)
   }
   const tts = ttsClient || createTtsClient({ ...config.tts, log })
   const face2face = face2faceClient || createFace2faceClient({ ...config.face2face, log })
 
   const services = {
     context: createContextService({ contextDao: daos.context }),
-    model: createModelService({ modelDao: daos.model, voiceDao: daos.voice, tts, media, log }),
+    model: createModelService({ modelDao: daos.model, voiceDao: daos.voice, tts, media, log, modelTaskDao: daos.modelTask }),
     voice: createVoiceService({ voiceDao: daos.voice, tts, media, log })
   }
   services.audition = createAuditionService({
     auditionDao: daos.audition,
     voiceService: services.voice,
-    log
+    log,
+    maxChars: config.audition.maxChars,
+    timeoutMs: config.audition.timeoutMs
   })
   services.video = createVideoService({
     videoDao: daos.video,
@@ -83,6 +86,18 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
     ? createAuditionWorker({
         auditionDao: daos.audition,
         auditionService: services.audition,
+        leaseMs: config.audition.timeoutMs + 60000,
+        intervalMs: config.worker.intervalMs,
+        log
+      })
+    : null
+
+  // Model clone (`preprocess_and_tran` + ASR) runs minutes-long, so its lease matches
+  // the TTS timeout rather than the short video lease.
+  const modelTaskWorker = config.worker.enabled
+    ? createModelTaskWorker({
+        modelTaskDao: daos.modelTask,
+        modelService: services.model,
         leaseMs: config.tts.timeoutMs + 60000,
         intervalMs: config.worker.intervalMs,
         log
@@ -96,12 +111,12 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
 
   const app = createApp({ services, media, config, logger: log, worker, rqlite, auth })
 
-  return { config, log, media, rqlite, daos, services, worker, auditionWorker, auth, app }
+  return { config, log, media, rqlite, daos, services, worker, auditionWorker, modelTaskWorker, auth, app }
 }
 
 async function main() {
   const context = buildContext()
-  const { config, log, rqlite, worker, auditionWorker, app } = context
+  const { config, log, rqlite, worker, auditionWorker, modelTaskWorker, app } = context
 
   log.info('starting duix-avatar server', {
     dataDir: config.dataDir,
@@ -115,6 +130,7 @@ async function main() {
 
   if (worker) worker.start()
   if (auditionWorker) auditionWorker.start()
+  if (modelTaskWorker) modelTaskWorker.start()
 
   const server = http.createServer(app)
   server.listen(config.port, config.host, () => {
@@ -125,6 +141,7 @@ async function main() {
     log.info(`${signal} received, shutting down`)
     if (worker) worker.stop()
     if (auditionWorker) auditionWorker.stop()
+    if (modelTaskWorker) modelTaskWorker.stop()
     server.close(() => {
       log.info('bye')
       process.exit(0)

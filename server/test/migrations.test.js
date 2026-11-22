@@ -20,7 +20,7 @@ describe('rqlite migrations', () => {
 
     const tables = await store.query(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
     const names = tables.map((row) => row.name)
-    expect(names).toEqual(expect.arrayContaining(['context', 'f2f_model', 'video', 'voice', 'audition']))
+    expect(names).toEqual(expect.arrayContaining(['context', 'f2f_model', 'video', 'voice', 'audition', 'model_task']))
 
     const videoColumns = (await store.query('PRAGMA table_info(video)')).map((row) => row.name)
     expect(videoColumns).toEqual(

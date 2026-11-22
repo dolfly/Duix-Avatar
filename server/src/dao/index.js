@@ -159,6 +159,66 @@ export function createAuditionDao(store) {
   }
 }
 
+const MODEL_TASK_COLUMNS = new Set(['name', 'video_path', 'audio_path', 'lang', 'status', 'message', 'model_id', 'voice_id'])
+
+export function createModelTaskDao(store) {
+  return {
+    insert({ name, videoPath, audioPath, lang }) {
+      return store
+        .execute(
+          `INSERT INTO model_task (name, video_path, audio_path, lang, status, message, created_at)
+           VALUES (?, ?, ?, ?, 'waiting', '', ?)`,
+          [name, videoPath, audioPath, lang, Date.now()]
+        )
+        .then((result) => Number(result.lastInsertId))
+    },
+
+    selectByID(id) {
+      return store.queryOne('SELECT * FROM model_task WHERE id = ?', [id])
+    },
+
+    findFirstByStatus(status) {
+      return store.queryOne('SELECT * FROM model_task WHERE status = ? ORDER BY id ASC LIMIT 1', [status])
+    },
+
+    update(id, fields) {
+      const columns = Object.keys(fields).filter((column) => MODEL_TASK_COLUMNS.has(column))
+      if (!columns.length) return Promise.resolve({ rowsAffected: 0 })
+      return store.execute(
+        `UPDATE model_task SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE id = ?`,
+        [...columns.map((column) => serialize(fields[column])), id]
+      )
+    },
+
+    updateStatus(id, status, message = '') {
+      return store.execute(
+        `UPDATE model_task SET status = ?, message = ? WHERE id = ?`,
+        [status, message, id]
+      )
+    },
+
+    /** Atomically lease a waiting task; returns true when this instance won the claim. */
+    async claim(id, { claimedBy, leaseMs, status, now = Date.now() }) {
+      const result = await store.execute(
+        `UPDATE model_task
+            SET claimed_by = ?, claimed_at = ?
+          WHERE id = ?
+            AND status = ?
+            AND (claimed_by IS NULL OR claimed_at IS NULL OR claimed_at < ?)`,
+        [claimedBy, now, id, status, now - leaseMs]
+      )
+      return Number(result.rowsAffected) === 1
+    },
+
+    release(id, claimedBy) {
+      return store.execute(
+        'UPDATE model_task SET claimed_by = NULL, claimed_at = NULL WHERE id = ? AND claimed_by = ?',
+        [id, claimedBy]
+      )
+    }
+  }
+}
+
 export function createVideoDao(store) {
   return {
     insert(video) {
@@ -313,4 +373,4 @@ function serialize(value) {
   return value
 }
 
-export default { createContextDao, createModelDao, createVoiceDao, createAuditionDao, createVideoDao }
+export default { createContextDao, createModelDao, createVoiceDao, createAuditionDao, createModelTaskDao, createVideoDao }

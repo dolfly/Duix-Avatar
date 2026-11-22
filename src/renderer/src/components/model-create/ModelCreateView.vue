@@ -10,9 +10,14 @@
     >
       <ModalBox class="modal-box" v-model="state.form" />
       <template #footer>
-        <t-button @click="action.submit" :loading="state.loading.submit">{{
-          $t('common.modelCreateView.submitButtonText')
-        }}</t-button>
+        <div class="footer-box">
+          <span v-if="state.loading.submit" class="processing-hint">{{
+            $t('common.modelCreateView.processingText')
+          }}</span>
+          <t-button @click="action.submit" :loading="state.loading.submit">{{
+            $t('common.modelCreateView.submitButtonText')
+          }}</t-button>
+        </div>
       </template>
     </t-dialog>
   </div>
@@ -158,6 +163,18 @@ const action = {
   :deep(.t-dialog__footer) {
     padding: 24px 40px;
     border-top: 1px solid #000000;
+  }
+
+  .footer-box {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+  }
+
+  .processing-hint {
+    font-size: 12px;
+    color: #8a8f99;
   }
 }
 </style>
