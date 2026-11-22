@@ -219,3 +219,81 @@ export function createAuditionWorker({
     }
   }
 }
+
+/**
+ * Background worker for model (avatar) clone tasks. Same single-phase claim/lease
+ * contract as `createAuditionWorker`: claim a `waiting` task, run the voice clone, then
+ * mark it `success`/`failed`. The lease is long because `preprocess_and_tran` takes
+ * minutes on the Pascal GPU.
+ */
+export function createModelTaskWorker({
+  modelTaskDao,
+  modelService,
+  leaseMs = 960000,
+  intervalMs = 2000,
+  log,
+  timers = { setInterval, clearInterval },
+  now = () => Date.now()
+}) {
+  let timer = null
+  let stopped = true
+
+  const instanceId = `server-${process.pid}-${randomUUID().slice(0, 8)}`
+
+  async function claimOne(status) {
+    const task = await modelTaskDao.findFirstByStatus(status)
+    if (!task) return null
+    const claimed = await modelTaskDao.claim(task.id, { claimedBy: instanceId, leaseMs, status, now: now() })
+    return claimed ? task : null
+  }
+
+  async function release(id) {
+    try {
+      await modelTaskDao.release(id, instanceId)
+    } catch (error) {
+      log?.warn?.(`failed to release claim on model task ${id}: ${error?.message || error}`)
+    }
+  }
+
+  async function tick() {
+    let task = null
+    try {
+      task = await claimOne('waiting')
+      if (task) await modelService.process(task)
+    } catch (error) {
+      log?.error?.(`model task worker tick failed: ${error?.stack || error}`)
+    } finally {
+      if (task) await release(task.id)
+    }
+  }
+
+  return {
+    instanceId,
+
+    start() {
+      if (!stopped) return this
+      stopped = false
+      tick().catch(() => {})
+      timer = timers.setInterval(() => {
+        tick().catch(() => {})
+      }, intervalMs)
+      timer?.unref?.()
+      log?.info?.('model task worker started', { instanceId, intervalMs, leaseMs })
+      return this
+    },
+
+    stop() {
+      stopped = true
+      if (timer) timers.clearInterval(timer)
+      timer = null
+      return Promise.resolve()
+    },
+
+    /** Run one tick immediately (used by tests). */
+    runOnce: tick,
+
+    get running() {
+      return !stopped
+    }
+  }
+}

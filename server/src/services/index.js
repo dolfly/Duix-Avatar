@@ -51,8 +51,13 @@ export function createContextService({ contextDao }) {
  * @param {object} deps.media media store
  * @param {string} [deps.defaultLang]
  */
-export function createModelService({ modelDao, voiceDao, tts, media, log, defaultLang = 'zh' }) {
-  async function add({ name, videoFile, audioFile, lang = defaultLang }) {
+export function createModelService({ modelDao, voiceDao, tts, media, log, defaultLang = 'zh', modelTaskDao }) {
+  /**
+   * Queue a model (avatar) clone. Voice cloning runs `preprocess_and_tran` plus ASR for
+   * 90s+ on the Pascal GPU, far beyond the EdgeOne 15s origin timeout, so the route only
+   * stores the uploads and enqueues a task; `process` completes it on a worker.
+   */
+  async function enqueue({ name, videoFile, audioFile, lang = defaultLang }) {
     if (!name) throw httpError(400, '模特名称不能为空')
     if (!videoFile) throw httpError(400, '缺少模特视频文件')
     if (!audioFile) throw httpError(400, '缺少参考音频文件')
@@ -65,11 +70,24 @@ export function createModelService({ modelDao, voiceDao, tts, media, log, defaul
     const videoRelative = media.copyToTemp(videoFile.path, `${stamp}${videoExt}`)
     const audioRelative = media.copyToOriginAudio(audioFile.path, `${stamp}${audioExt}`)
 
+    const taskId = await modelTaskDao.insert({
+      name,
+      videoPath: videoRelative,
+      audioPath: audioRelative,
+      lang
+    })
+    removeUploads(media, [videoFile, audioFile], log)
+    return taskId
+  }
+
+  /** Run the actual clone for a claimed model task, persisting success/failure. */
+  async function process(task) {
+    await modelTaskDao.update(task.id, { message: '正在克隆音色' })
     try {
       const result = await tts.preprocessAndTran({
-        format: audioExt.replace(/^\./, ''),
-        reference_audio: media.toTtsRemotePath(audioRelative),
-        lang
+        format: extensionOf(task.audio_path, '.wav').replace(/^\./, ''),
+        reference_audio: media.toTtsRemotePath(task.audio_path),
+        lang: task.lang
       })
 
       if (!result || Number(result.code) !== 0) {
@@ -78,25 +96,35 @@ export function createModelService({ modelDao, voiceDao, tts, media, log, defaul
       }
 
       const voiceId = await voiceDao.insert({
-        originAudioPath: audioRelative,
-        lang,
+        originAudioPath: task.audio_path,
+        lang: task.lang,
         asrFormatAudioUrl: result.asr_format_audio_url,
         referenceAudioText: result.reference_audio_text
       })
 
-      return await modelDao.insert({
-        name,
-        videoPath: videoRelative,
-        audioPath: audioRelative,
+      const modelId = await modelDao.insert({
+        name: task.name,
+        videoPath: task.video_path,
+        audioPath: task.audio_path,
         voiceId
       })
+
+      await modelTaskDao.update(task.id, { status: 'success', message: '', model_id: modelId, voice_id: voiceId })
+      return { status: 'success', modelId }
     } catch (error) {
-      media.remove(videoRelative)
-      media.removeTts(audioRelative)
-      throw error
-    } finally {
-      removeUploads(media, [videoFile, audioFile], log)
+      // Mirror the old synchronous `add` cleanup: never leave the cloned files behind.
+      media.remove(task.video_path)
+      media.removeTts(task.audio_path)
+      const message = error?.message || '声音克隆失败'
+      log?.error?.(`model task ${task.id} 失败: ${message}`)
+      await modelTaskDao.updateStatus(task.id, 'failed', message)
+      return { status: 'failed' }
     }
+  }
+
+  async function findTask(id) {
+    const row = await modelTaskDao.selectByID(id)
+    return row ? toModelTaskDto(row) : null
   }
 
   async function page({ page = 1, pageSize = 10, name = '' } = {}) {
@@ -151,7 +179,18 @@ export function createModelService({ modelDao, voiceDao, tts, media, log, defaul
     return { deleted, failed }
   }
 
-  return { add, page, count, find, remove, batchRemove }
+  return { enqueue, process, findTask, page, count, find, remove, batchRemove }
+}
+
+function toModelTaskDto(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    status: row.status,
+    message: row.message,
+    model_id: row.model_id ?? null,
+    created_at: row.created_at
+  }
 }
 
 function toModelDto(row) {
@@ -184,25 +223,53 @@ export function createVoiceService({ voiceDao, tts, media, log }) {
     return voiceDao.selectByID(id)
   }
 
-  /** Absolute path of a voice's reference audio (under the TTS data root) or null. */
-  function referenceAudioPath(voice) {
-    const relative = voice?.origin_audio_path ? String(voice.origin_audio_path).replace(/^\/+/, '') : ''
-    if (!relative || relative.includes('..')) return null
-    const target = path.resolve(media.ttsRoot, relative)
-    if (!target.startsWith(path.resolve(media.ttsRoot) + path.sep)) return null
+  /** Resolve a path relative to the TTS data root; returns the absolute path only when it exists. */
+  function resolveTtsPath(relative) {
+    const cleaned = String(relative || '')
+      .replace(/\\/g, '/')
+      .replace(/\/{2,}/g, '/')
+      .replace(/^\/+/, '')
+    if (!cleaned || cleaned.includes('..')) return null
+    const root = path.resolve(media.ttsRoot)
+    const target = path.resolve(root, cleaned)
+    if (target !== root && !target.startsWith(root + path.sep)) return null
     return fs.existsSync(target) ? target : null
   }
 
+  /**
+   * Absolute path of a voice's reference audio (under the TTS data root) or null.
+   *
+   * The TTS image's `format_wav`/`clean_wav` rewrite the uploaded reference audio into
+   * `format_*.wav` / `format_denoise_*.wav` and delete the original, so the bare
+   * `<stamp>.wav` in `origin_audio_path` is gone once the clone finishes. Fall back to
+   * `asr_format_audio_url` — the TTS container's absolute path to the surviving denoised
+   * file (`/code/data/...`, the container mount of this same data root).
+   */
+  function referenceAudioPath(voice) {
+    const primary = resolveTtsPath(voice?.origin_audio_path)
+    if (primary) return primary
+
+    const containerPath = String(voice?.asr_format_audio_url || '')
+      .replace(/\\/g, '/')
+      .replace(/\/{2,}/g, '/')
+      .replace(/^\/+/, '')
+      .replace(/^code\/data\/?/, '')
+    return resolveTtsPath(containerPath)
+  }
+
   /** Synthesise `text`; returns the wav path relative to the face2face media root. */
-  async function makeAudio({ voice, text, subDir = 'temp' }) {
+  async function makeAudio({ voice, text, subDir = 'temp', timeoutMs } = {}) {
     if (!voice) throw httpError(404, '音色不存在')
-    const audio = await tts.makeAudio({
-      ...DEFAULT_TTS_PARAMS,
-      speaker: randomId(),
-      text,
-      reference_audio: voice.asr_format_audio_url,
-      reference_text: voice.reference_audio_text
-    })
+    const audio = await tts.makeAudio(
+      {
+        ...DEFAULT_TTS_PARAMS,
+        speaker: randomId(),
+        text,
+        reference_audio: voice.asr_format_audio_url,
+        reference_text: voice.reference_audio_text
+      },
+      timeoutMs ? { timeoutMs } : {}
+    )
 
     media.ensureDirs()
     const fileName = `${randomId()}.wav`
@@ -219,11 +286,14 @@ export function createVoiceService({ voiceDao, tts, media, log }) {
  * returns immediately; a background worker runs `synthesize` so the HTTP request never
  * outlives the EdgeOne 15s origin timeout (TTS takes minutes on the Pascal GPU).
  */
-export function createAuditionService({ auditionDao, voiceService, log }) {
+export function createAuditionService({ auditionDao, voiceService, log, maxChars = 200, timeoutMs } = {}) {
   async function create({ voiceId, text }) {
     const voice = await voiceService.find(voiceId)
     if (!voice) throw httpError(404, '音色不存在')
     if (!text) throw httpError(400, '试听文本不能为空')
+    if (String(text).length > maxChars) {
+      throw httpError(400, `试听文本过长（最多 ${maxChars} 字），请分段试听`)
+    }
     return auditionDao.insert({ voiceId, text })
   }
 
@@ -240,12 +310,13 @@ export function createAuditionService({ auditionDao, voiceService, log }) {
         await auditionDao.updateStatus(task.id, 'failed', '音色不存在')
         return { status: 'failed' }
       }
-      const relative = await voiceService.makeAudio({ voice, text: task.text })
+      const relative = await voiceService.makeAudio({ voice, text: task.text, timeoutMs })
       await auditionDao.update(task.id, { status: 'success', message: '', file_path: relative })
       return { status: 'success', filePath: relative }
     } catch (error) {
-      log?.error?.(`audition ${task.id} 生成失败: ${error?.message || error}`)
-      await auditionDao.updateStatus(task.id, 'failed', error?.message || '试听生成失败')
+      const message = isTimeoutError(error) ? '试听生成超时，请稍后重试' : error?.message || '试听生成失败'
+      log?.error?.(`audition ${task.id} 生成失败: ${message}`)
+      await auditionDao.updateStatus(task.id, 'failed', message)
       return { status: 'failed' }
     }
   }
@@ -564,6 +635,10 @@ export function extensionOf(fileName, fallback = '') {
 
 export function httpError(status, message) {
   return Object.assign(new Error(message), { status })
+}
+
+function isTimeoutError(error) {
+  return error?.code === 'ECONNABORTED' || /timeout/i.test(String(error?.message || ''))
 }
 
 function removeUploads(media, files, log) {

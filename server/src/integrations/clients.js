@@ -28,11 +28,17 @@ export function createTtsClient({ baseUrl, timeoutMs, http = axios, log }) {
 
     /**
      * Synthesise an audio file.
+     * @param {object} param
+     * @param {{timeoutMs?: number}} [options] per-request timeout override; the
+     *   instance default (TTS_TIMEOUT_MS) applies when omitted. Auditions pass a shorter
+     *   wall so a hung synthesis is aborted instead of burning the card for 15 minutes.
      * @returns {Promise<Buffer>} wav bytes
      */
-    async makeAudio(param) {
+    async makeAudio(param, options = {}) {
       log?.debug?.('tts invoke', { ...param, text: truncate(param.text) })
-      const { data } = await instance.post('/v1/invoke', param, { responseType: 'arraybuffer' })
+      const requestOptions = { responseType: 'arraybuffer' }
+      if (options.timeoutMs) requestOptions.timeout = options.timeoutMs
+      const { data } = await instance.post('/v1/invoke', param, requestOptions)
       return Buffer.isBuffer(data) ? data : Buffer.from(data)
     }
   }

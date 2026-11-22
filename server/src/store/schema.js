@@ -114,6 +114,29 @@ export const migrations = [
            claimed_at INTEGER
        )`
     ]
+  },
+  {
+    // Model (avatar) cloning tasks. Voice cloning runs `preprocess_and_tran` (93s+ on
+    // the Pascal GPU) plus ASR, far beyond the EdgeOne 15s origin timeout, so model
+    // creation is queued the same way as audition and completed by a worker.
+    version: 7,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS model_task
+       (
+           id         INTEGER PRIMARY KEY AUTOINCREMENT,
+           name       TEXT,
+           video_path TEXT,
+           audio_path TEXT,
+           lang       TEXT,
+           model_id   INTEGER,
+           voice_id   INTEGER,
+           status     TEXT,
+           message    TEXT,
+           created_at INTEGER,
+           claimed_by TEXT,
+           claimed_at INTEGER
+       )`
+    ]
   }
 ]
 

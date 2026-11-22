@@ -67,6 +67,16 @@ export function loadConfig(env = process.env) {
       // resolves `/code/data/origin_audio/x.wav`. `/code/data` here would double-prefix.
       remoteDataRoot: normalizeBaseUrl(env.TTS_REMOTE_DATA_ROOT, '/')
     },
+    audition: {
+      // A voice audition is a preview, not a full synthesis: cap the accepted text so
+      // a 500+-character script can no longer occupy the GPU for hours (and, once
+      // thermal-throttled, drag every queued audition past its timeout). Longer text is
+      // rejected immediately with a clear message instead of timing out after minutes.
+      maxChars: int(env.AUDITION_MAX_CHARS, 200),
+      // Per-request wall for the audition TTS call. Much shorter than TTS_TIMEOUT_MS:
+      // a hung synthesis is aborted instead of burning the card for 15 minutes.
+      timeoutMs: int(env.AUDITION_TIMEOUT_MS, 10 * 60 * 1000)
+    },
     face2face: {
       baseUrl: face2faceBaseUrl,
       timeoutMs: int(env.FACE2FACE_TIMEOUT_MS, 60 * 1000),

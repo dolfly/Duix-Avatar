@@ -185,7 +185,7 @@
   </div>
 </template>
 <script setup>
-import { reactive, onMounted, ref, computed } from 'vue'
+import { reactive, onMounted, ref, computed, watch } from 'vue'
 import { DeleteIcon } from 'tdesign-icons-vue-next'
 import { modelPage, removeModel, removeModels, countModel } from '@renderer/api/index.js'
 import { formatDate } from '@renderer/utils/index.js'
@@ -229,12 +229,14 @@ const state = reactive({
   },
   tabList: [
     {
-      name: '最近使用',
+      key: 'common.myModelList.recentlyUsedTabText',
+      name: t('common.myModelList.recentlyUsedTabText'),
       active: true,
       id: 'recentlyUsed'
     },
     {
-      name: '极速定制',
+      key: 'common.myModelList.rapidCustomizationTabText',
+      name: t('common.myModelList.rapidCustomizationTabText'),
       active: false,
       id: 'rapidCustomization'
     }
@@ -243,6 +245,11 @@ const state = reactive({
 })
 onMounted(() => {
   modelPageAJax()
+})
+watch(locale, () => {
+  state.tabList.forEach((el) => {
+    el.name = t(el.key)
+  })
 })
 const modelPageAJax = async () => {
   try {

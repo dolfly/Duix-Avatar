@@ -248,6 +248,18 @@ function createModelRouter(modelService, upload) {
   )
 
   router.get(
+    '/task/:id',
+    h(async (req, res) => {
+      const task = await modelService.findTask(req.params.id)
+      if (!task) {
+        res.status(404).json({ code: 404, message: '定制任务不存在' })
+        return
+      }
+      res.json(task)
+    })
+  )
+
+  router.get(
     '/:id',
     h(async (req, res) => {
       const model = await modelService.find(req.params.id)
@@ -267,13 +279,13 @@ function createModelRouter(modelService, upload) {
     ]),
     h(async (req, res) => {
       const files = req.files || {}
-      const id = await modelService.add({
+      const taskId = await modelService.enqueue({
         name: req.body?.name,
         videoFile: files.video?.[0],
         audioFile: files.audio?.[0],
         lang: req.body?.lang || 'zh'
       })
-      res.status(201).json({ id })
+      res.status(202).json({ taskId, status: 'waiting' })
     })
   )
 

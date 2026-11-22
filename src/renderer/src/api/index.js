@@ -70,6 +70,25 @@ function query(params) {
   return encoded ? `?${encoded}` : ''
 }
 
+const MODEL_TASK_POLL_MS = 2000
+const MODEL_TASK_MAX_POLL_MS = 10 * 60 * 1000
+
+/**
+ * Poll an async model-clone task to completion. Voice cloning runs minutes-long on the
+ * GPU, so the server answers `POST /api/models` with 202 + task id; this keeps the
+ * caller's contract a plain success/failure result.
+ */
+async function pollModelTask(taskId) {
+  const deadline = Date.now() + MODEL_TASK_MAX_POLL_MS
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, MODEL_TASK_POLL_MS))
+    const task = await http(`/api/models/task/${taskId}`)
+    if (task?.status === 'success') return task.model_id
+    if (task?.status === 'failed') throw new Error(task.message || '定制失败')
+  }
+  throw new Error('定制超时，请稍后在列表查看结果')
+}
+
 const httpApi = {
   videoPage: ({ page = 1, pageSize = 1, name = '' } = {}) =>
     http(`/api/videos${query({ page, pageSize, name })}`),
@@ -155,7 +174,8 @@ const httpApi = {
 
   /**
    * The model video is transcoded to H.264 and the reference audio is extracted in
-   * the browser (ffmpeg.wasm), so no ffmpeg binary is needed anywhere.
+   * the browser (ffmpeg.wasm), so no ffmpeg binary is needed anywhere. Voice cloning
+   * is asynchronous server-side, so this polls the clone task to a terminal state.
    */
   addModel: async ({ name, videoPath }) => {
     if (!(typeof Blob !== 'undefined' && videoPath instanceof Blob)) {
@@ -169,7 +189,9 @@ const httpApi = {
     form.append('video', video, video.name)
     form.append('audio', audio, audio.name)
     const result = await http('/api/models', { method: 'POST', body: form })
-    return result ? result.id : false
+    const taskId = result?.taskId
+    if (!taskId) throw new Error(result?.message || '提交定制失败')
+    return pollModelTask(taskId)
   },
 
   countModel: async (name = '') => {

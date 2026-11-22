@@ -8,7 +8,7 @@ import request from 'supertest'
 import { buildContext } from '../src/index.js'
 import { createLogger } from '../src/logger.js'
 import { migrate } from '../src/store/schema.js'
-import { createVideoWorker, createAuditionWorker } from '../src/services/worker.js'
+import { createVideoWorker, createAuditionWorker, createModelTaskWorker } from '../src/services/worker.js'
 import { SqliteStore } from './helpers/sqlite-store.js'
 
 /**
@@ -86,6 +86,7 @@ let f2f
 let ctx
 let workerA
 let workerB
+let modelWorker
 
 const AUTH = { username: 'admin', password: 's3cret' }
 let authToken = ''
@@ -137,6 +138,12 @@ beforeEach(async () => {
 
   workerA = createVideoWorker({ videoDao: ctx.daos.video, videoService: ctx.services.video, log: SILENT, leaseMs: 60000 })
   workerB = createVideoWorker({ videoDao: ctx.daos.video, videoService: ctx.services.video, log: SILENT, leaseMs: 60000 })
+  modelWorker = createModelTaskWorker({
+    modelTaskDao: ctx.daos.modelTask,
+    modelService: ctx.services.model,
+    log: SILENT,
+    leaseMs: 60000
+  })
 
   ttsState.preprocess = null
   f2fState.submits = []
@@ -156,8 +163,18 @@ async function createModel(name = '模特A') {
     .attach('video', Buffer.from('fake-mp4'), { filename: 'raw.mp4', contentType: 'video/mp4' })
     .attach('audio', Buffer.from('fake-wav'), { filename: 'raw.wav', contentType: 'audio/wav' })
 
-  expect(response.status).toBe(201)
-  return response.body.id
+  expect(response.status).toBe(202)
+  expect(response.body).toMatchObject({ status: 'waiting' })
+  const taskId = response.body.taskId
+  expect(Number.isInteger(taskId)).toBe(true)
+
+  // Voice cloning is asynchronous: the background worker completes the task.
+  await modelWorker.runOnce()
+
+  const task = await authed.get(`/api/models/task/${taskId}`)
+  expect(task.status).toBe(200)
+  expect(task.body.status).toBe('success')
+  return task.body.model_id
 }
 
 describe('GET /api/health', () => {
@@ -324,6 +341,39 @@ describe('model API', () => {
     })
   })
 
+  it('enqueues model cloning asynchronously and reports task status', async () => {
+    const response = await authed
+      .post('/api/models')
+      .field('name', '异步模特')
+      .attach('video', Buffer.from('fake-mp4'), { filename: 'raw.mp4', contentType: 'video/mp4' })
+      .attach('audio', Buffer.from('fake-wav'), { filename: 'raw.wav', contentType: 'audio/wav' })
+
+    expect(response.status).toBe(202)
+    expect(response.body).toMatchObject({ status: 'waiting' })
+    const taskId = response.body.taskId
+
+    // Before the worker runs, the task is still waiting and no model exists yet.
+    const pending = await authed.get(`/api/models/task/${taskId}`)
+    expect(pending.status).toBe(200)
+    expect(pending.body.status).toBe('waiting')
+    expect(pending.body.model_id).toBeNull()
+
+    await modelWorker.runOnce()
+
+    const done = await authed.get(`/api/models/task/${taskId}`)
+    expect(done.status).toBe(200)
+    expect(done.body.status).toBe('success')
+    expect(Number.isInteger(done.body.model_id)).toBe(true)
+
+    const model = await authed.get(`/api/models/${done.body.model_id}`)
+    expect(model.status).toBe(200)
+    expect(model.body.name).toBe('异步模特')
+  })
+
+  it('returns 404 for an unknown model task', async () => {
+    await expect(authed.get('/api/models/task/999')).resolves.toMatchObject({ status: 404 })
+  })
+
   it('rejects requests without the required fields', async () => {
     const response = await authed.post('/api/models').field('name', 'x')
     expect(response.status).toBe(400)
@@ -351,11 +401,21 @@ describe('model API', () => {
           AUTH_PASSWORD: AUTH.password
         }
       })
-      await expect(failing.services.model.add({
+      const taskId = await failing.services.model.enqueue({
         name: 'bad',
         videoFile: { path: writeTemp('a.mp4'), originalname: 'a.mp4' },
         audioFile: { path: writeTemp('a.wav'), originalname: 'a.wav' }
-      })).rejects.toThrow(/声音复刻失败/)
+      })
+      const task = await failing.daos.modelTask.selectByID(taskId)
+      const result = await failing.services.model.process(task)
+      expect(result.status).toBe('failed')
+
+      const finished = await failing.daos.modelTask.selectByID(taskId)
+      expect(finished.status).toBe('failed')
+      expect(finished.message).toMatch(/声音复刻失败/)
+      // A failed clone must not leave its uploaded media behind.
+      expect(fs.existsSync(path.join(dataDir, 'face2face', finished.video_path))).toBe(false)
+      expect(fs.existsSync(path.join(dataDir, 'voice', 'data', finished.audio_path))).toBe(false)
     } finally {
       await new Promise((resolve) => stub.server.close(resolve))
       ttsState.preprocess = original
@@ -592,6 +652,11 @@ describe('voice API', () => {
     expect(response.headers['content-type']).toMatch(/audio/)
   })
 
+  it('still requires a token for the voice preview (auth is not relaxed)', async () => {
+    await createModel()
+    await expect(request(ctx.app).get('/api/voices/1/preview')).resolves.toMatchObject({ status: 401 })
+  })
+
   it('auditions text asynchronously and exposes the generated audio', async () => {
     await createModel()
 
@@ -664,6 +729,106 @@ describe('voice API', () => {
   it('returns 404 for an unknown audition task', async () => {
     await createModel()
     await expect(authed.get('/api/voices/1/audition/999')).resolves.toMatchObject({ status: 404 })
+  })
+
+  it('falls back to the TTS denoised audio when the origin reference was rewritten', async () => {
+    await createModel()
+    const voice = await store.queryOne('SELECT * FROM voice WHERE id = 1')
+
+    // The TTS image's clean_wav rewrites the origin to format_denoise_* and deletes
+    // the original. Point asr_format_audio_url at the surviving file (the TTS
+    // container's absolute /code/data/... path).
+    fs.rmSync(path.join(dataDir, 'voice', 'data', voice.origin_audio_path), { force: true })
+    const denoisedRel = 'origin_audio/format_denoise_ref.wav'
+    fs.writeFileSync(path.join(dataDir, 'voice', 'data', denoisedRel), 'denoised-bytes')
+    await store.execute('UPDATE voice SET asr_format_audio_url = ? WHERE id = ?', [`/code/data//${denoisedRel}`, 1])
+
+    const response = await authed.get('/api/voices/1/preview')
+    expect(response.status).toBe(200)
+    expect(response.headers['content-type']).toMatch(/audio/)
+  })
+
+  it('rejects path traversal in the reference audio fallback', async () => {
+    await createModel()
+    const voice = await store.queryOne('SELECT * FROM voice WHERE id = 1')
+    fs.rmSync(path.join(dataDir, 'voice', 'data', voice.origin_audio_path), { force: true })
+    await store.execute('UPDATE voice SET asr_format_audio_url = ? WHERE id = ?', ['/code/data/../../etc/passwd', 1])
+
+    const response = await authed.get('/api/voices/1/preview')
+    expect(response.status).toBe(404)
+  })
+
+  it('rejects audition text longer than the preview limit', async () => {
+    await createModel()
+    const response = await authed.post('/api/voices/1/audition').send({ text: '试'.repeat(201) })
+    expect(response.status).toBe(400)
+    expect(response.body.message).toMatch(/过长/)
+  })
+
+  it('aborts a hung audition synthesis at the audition timeout', async () => {
+    const hangStub = await startStubServer((req, res) => {
+      let body = ''
+      req.on('data', (chunk) => (body += chunk))
+      req.on('end', () => {
+        if (req.url === '/v1/preprocess_and_tran') {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(
+            JSON.stringify({ code: 0, asr_format_audio_url: 'origin_audio/ref.wav', reference_audio_text: '你好' })
+          )
+          return
+        }
+        // /v1/invoke: never respond, so the audition can only end via its timeout.
+      })
+    })
+    try {
+      const hangCtx = buildContext({
+        store,
+        logger: SILENT,
+        env: {
+          DATA_DIR: dataDir,
+          TTS_BASE_URL: hangStub.baseUrl,
+          WORKER_ENABLED: 'false',
+          AUDITION_TIMEOUT_MS: '100',
+          AUTH_USERNAME: AUTH.username,
+          AUTH_PASSWORD: AUTH.password
+        }
+      })
+      const hangLogin = await request(hangCtx.app).post('/api/auth/login').send(AUTH)
+      const hangToken = hangLogin.body.token
+
+      // Clone a voice through the hang context's preprocess endpoint.
+      const taskId = await hangCtx.services.model.enqueue({
+        name: 'hang',
+        videoFile: { path: writeTemp('a.mp4'), originalname: 'a.mp4' },
+        audioFile: { path: writeTemp('a.wav'), originalname: 'a.wav' }
+      })
+      await hangCtx.services.model.process(await hangCtx.daos.modelTask.selectByID(taskId))
+      const voice = await store.queryOne('SELECT * FROM voice ORDER BY id DESC LIMIT 1')
+
+      const queued = await request(hangCtx.app)
+        .post(`/api/voices/${voice.id}/audition`)
+        .set('Authorization', `Bearer ${hangToken}`)
+        .send({ text: '你好' })
+      expect(queued.status).toBe(202)
+      const auditionId = queued.body.taskId
+
+      const worker = createAuditionWorker({
+        auditionDao: hangCtx.daos.audition,
+        auditionService: hangCtx.services.audition,
+        log: SILENT,
+        leaseMs: 60000
+      })
+      await worker.runOnce()
+
+      const task = await request(hangCtx.app)
+        .get(`/api/voices/${voice.id}/audition/${auditionId}`)
+        .set('Authorization', `Bearer ${hangToken}`)
+      expect(task.status).toBe(200)
+      expect(task.body.status).toBe('failed')
+      expect(task.body.message).toMatch(/超时/)
+    } finally {
+      await new Promise((resolve) => hangStub.server.close(resolve))
+    }
   })
 })
 
