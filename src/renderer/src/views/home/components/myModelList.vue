@@ -1,6 +1,10 @@
 <template>
   <div class="model-content-box">
     <div class="form-box">
+      <t-radio-group v-model="state.viewMode" variant="default-filled" class="view-switch">
+        <t-radio-button value="card">{{ $t('common.listView.cardViewText') }}</t-radio-button>
+        <t-radio-button value="table">{{ $t('common.listView.tableViewText') }}</t-radio-button>
+      </t-radio-group>
       <t-input
         v-model="state.formData.name"
         class="form-input"
@@ -35,7 +39,7 @@
           </div>
         </div>
       </div>
-      <div class="table-list" v-else>
+      <div v-else-if="state.viewMode === 'card'" class="table-list">
         <div v-for="(item, index) in state.modelList" :key="index + 'modelList'" class="li">
           <!-- 视频上部分内容 -->
           <div class="img-video comme">
@@ -79,6 +83,51 @@
           </div>
         </div>
       </div>
+      <div v-else class="table-view">
+        <div class="table-toolbar">
+          <span class="selected-count">
+            {{ $t('common.listView.selectedCountText', { count: selectedIds.length }) }}
+          </span>
+          <t-button
+            theme="danger"
+            variant="outline"
+            :disabled="selectedIds.length === 0 || state.batchDeleting"
+            @click="openBatchDelete"
+          >
+            {{ $t('common.listView.batchDeleteText') }}
+          </t-button>
+        </div>
+        <t-table
+          row-key="id"
+          :data="state.modelList"
+          :columns="columns"
+          v-model:selected-row-keys="state.selectedRowKeys"
+          table-layout="fixed"
+        >
+          <template #name="{ row }">
+            <div class="cell-name">{{ row.name }}</div>
+          </template>
+          <template #voice_count="{ row }">
+            {{ row.voice_id ? 1 : 0 }}
+          </template>
+          <template #created_at="{ row }">
+            {{ formatDate(row.created_at) }}
+          </template>
+          <template #operation="{ row }">
+            <div class="cell-ops">
+              <t-button size="small" variant="text" theme="primary" @click="editVideo(row)">
+                {{ $t('common.myModelList.createVideoText') }}
+              </t-button>
+              <t-button size="small" variant="text" theme="primary" @click="previewVideo(row.video_path)">
+                {{ $t('common.myModelList.previewText') }}
+              </t-button>
+              <t-button size="small" variant="text" theme="danger" @click="delModel(row.id)">
+                {{ $t('common.listView.deleteText') }}
+              </t-button>
+            </div>
+          </template>
+        </t-table>
+      </div>
     </div>
     <div v-if="home.homeState.modelNum > 0" class="pagination-box">
       <div class="pagination-content">
@@ -101,12 +150,44 @@
       @cancel="cancelFun"
     />
     <DeleteDialog ref="deleteDialogRef" @ok="okDelete" />
+    <t-dialog
+      v-model:visible="state.batchDeleteVisible"
+      :header="$t('common.listView.batchDeleteTitle')"
+      :width="480"
+      placement="center"
+      :close-on-overlay-click="false"
+      :close-btn="false"
+      :footer="false"
+    >
+      <div class="delete-content-box">
+        <div class="delete-content">
+          <img src="../../../assets/images/home/warning.svg" />
+          <div class="title-ok">
+            {{ $t('common.listView.batchDeleteConfirmText', { count: selectedIds.length }) }}
+          </div>
+        </div>
+        <div class="btn-box">
+          <t-button class="cancel" variant="outline" theme="default" @click="state.batchDeleteVisible = false">
+            {{ $t('common.deleteDialog.buttonTextLeft') }}
+          </t-button>
+          <t-button
+            class="ok"
+            theme="primary"
+            :loading="state.batchDeleting"
+            :disabled="state.batchDeleting"
+            @click="confirmBatchDelete"
+          >
+            {{ $t('common.deleteDialog.buttonTextRight') }}
+          </t-button>
+        </div>
+      </div>
+    </t-dialog>
   </div>
 </template>
 <script setup>
-import { reactive, onMounted, ref } from 'vue'
+import { reactive, onMounted, ref, computed } from 'vue'
 import { DeleteIcon } from 'tdesign-icons-vue-next'
-import { modelPage, removeModel } from '@renderer/api/index.js'
+import { modelPage, removeModel, removeModels, countModel } from '@renderer/api/index.js'
 import { formatDate } from '@renderer/utils/index.js'
 import { useRouter } from 'vue-router'
 import VideoDialog from '@renderer/views/home/components/videoDialog.vue'
@@ -139,6 +220,10 @@ const state = reactive({
   isTime: false,
   modelList: [], // 模型列表[],
   delModelId: '',
+  viewMode: 'card',
+  selectedRowKeys: [],
+  batchDeleteVisible: false,
+  batchDeleting: false,
   formData: {
     name: ''
   },
@@ -196,6 +281,74 @@ const okDelete = () => {
       console.error('Error:', error)
     })
 }
+
+const columns = computed(() => [
+  { colKey: 'row-select', type: 'multiple', width: 46 },
+  { colKey: 'name', title: t('common.listView.nameText'), ellipsis: true, minWidth: 180 },
+  { colKey: 'voice_count', title: t('common.listView.voiceCountText'), width: 110 },
+  { colKey: 'created_at', title: t('common.listView.createdText'), width: 160 },
+  { colKey: 'operation', title: t('common.listView.operationText'), width: 200 }
+])
+
+// Effective selection = selected keys intersected with the current page (see
+// worksList.vue for why the raw key array can hold stale rows).
+const selectedIds = computed(() => {
+  const pageIds = new Set(state.modelList.map((item) => String(item.id)))
+  return state.selectedRowKeys.filter((key) => pageIds.has(String(key))).map((key) => Number(key))
+})
+
+const openBatchDelete = () => {
+  if (selectedIds.value.length === 0) return
+  state.batchDeleteVisible = true
+}
+
+const refreshCount = async () => {
+  try {
+    const n = await countModel()
+    home.setModelNum(n)
+  } catch (error) {
+    console.error(error)
+  }
+}
+
+const confirmBatchDelete = async () => {
+  const ids = selectedIds.value
+  if (ids.length === 0) return
+  const nameById = {}
+  state.modelList.forEach((item) => {
+    nameById[item.id] = item.name
+  })
+  state.batchDeleting = true
+  try {
+    const res = await removeModels(ids)
+    const { deleted = [], failed = [] } = res || {}
+    await modelPageAJax()
+    await refreshCount()
+    if (failed.length === 0) {
+      MessagePlugin.success(t('common.message.deleteSuccessText'))
+    } else if (deleted.length === 0) {
+      MessagePlugin.error(t('common.message.deleteErrorText'))
+    } else {
+      const failedNames = failed.map((f) => nameById[f.id] ?? f.id).join(t('common.listView.batchDeleteFailedSeparator'))
+      const failedSuffix = failedNames
+        ? t('common.listView.batchDeleteFailedNamesText', { names: failedNames })
+        : ''
+      MessagePlugin.warning(
+        `${t('common.listView.batchDeletePartialText', {
+          success: deleted.length,
+          failed: failed.length
+        })}${failedSuffix}`
+      )
+    }
+  } catch (error) {
+    MessagePlugin.error(t('common.message.deleteErrorText'))
+    console.error('Error:', error)
+  } finally {
+    state.batchDeleting = false
+    state.batchDeleteVisible = false
+    state.selectedRowKeys = []
+  }
+}
 const delModel = (id) => {
   if (deleteDialogRef.value && deleteDialogRef.value.showDialogFun) {
     deleteDialogRef.value.showDialogFun()
@@ -215,6 +368,7 @@ const cancelFun = () => {
 const onKeypressFun = () => {
   if (!state.isTime) {
     state.isTime = true
+    state.selectedRowKeys = []
     const timeout = setTimeout(() => {
       modelPageAJax()
       state.isTime = false
@@ -227,11 +381,13 @@ const editVideo = (item) => {
 }
 const onPageSizeChange = (size) => {
   state.pageSize = size
+  state.selectedRowKeys = []
   modelPageAJax()
 }
 
 const onCurrentChange = (index) => {
   state.page = index
+  state.selectedRowKeys = []
   modelPageAJax()
 }
 const tabClick = (index) => {
@@ -253,6 +409,9 @@ const tabClick = (index) => {
     position: absolute;
     top: -50px;
     right: 0;
+    .view-switch {
+      margin-right: 12px;
+    }
     .form-input {
       width: 216px;
       margin-left: auto;
@@ -557,6 +716,74 @@ const tabClick = (index) => {
             text-overflow: ellipsis;
           }
         }
+      }
+    }
+  }
+
+  .table-view {
+    padding-bottom: 40px;
+    .table-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      .selected-count {
+        font-family: PingFang SC, PingFang SC;
+        font-weight: 400;
+        font-size: 12px;
+        color: #696f7a;
+        line-height: 18px;
+      }
+    }
+    .cell-name {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cell-ops {
+      display: flex;
+      align-items: center;
+    }
+  }
+
+  .delete-content-box {
+    width: 100%;
+    .delete-content {
+      img {
+        width: 48px;
+        height: 48px;
+        display: block;
+        margin: 20px auto 16px;
+      }
+      .title-ok {
+        font-family: PingFang SC, PingFang SC;
+        font-weight: 600;
+        font-size: 14px;
+        text-align: center;
+        color: #303133;
+        line-height: 22px;
+      }
+    }
+    .btn-box {
+      display: flex;
+      justify-content: center;
+      margin-top: 20px;
+      .cancel {
+        margin-right: 26px;
+        width: 98px;
+        color: #9097a5;
+        border-color: #9097a5;
+        font-family: PingFang SC, PingFang SC;
+        font-weight: 500;
+        font-size: 12px;
+      }
+      .ok {
+        width: 98px;
+        color: #fff;
+        background-color: #434af9;
+        font-family: PingFang SC, PingFang SC;
+        font-weight: 500;
+        font-size: 12px;
       }
     }
   }

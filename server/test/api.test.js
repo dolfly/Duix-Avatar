@@ -296,6 +296,34 @@ describe('model API', () => {
     expect(fs.existsSync(path.join(dataDir, 'face2face', model.video_file))).toBe(false)
   })
 
+  it('batch deletes models, reporting missing ids and cleaning media files', async () => {
+    const id1 = await createModel('模特A')
+    const id2 = await createModel('模特B')
+    const model1 = await ctx.services.model.find(id1)
+
+    const videoFile = path.join(dataDir, 'face2face', model1.video_file)
+    const audioFile = path.join(dataDir, 'voice', 'data', model1.audio_file)
+    expect(fs.existsSync(videoFile)).toBe(true)
+    expect(fs.existsSync(audioFile)).toBe(true)
+
+    const response = await authed.post('/api/models/batch-delete').send({ ids: [id1, id2, 99999] })
+    expect(response.status).toBe(200)
+    expect(response.body.deleted).toEqual([id1, id2])
+    expect(response.body.failed).toEqual([{ id: 99999, message: '模特不存在' }])
+    expect(fs.existsSync(videoFile)).toBe(false)
+    expect(fs.existsSync(audioFile)).toBe(false)
+  })
+
+  it('rejects malformed ids on model batch delete', async () => {
+    await expect(authed.post('/api/models/batch-delete').send({})).resolves.toMatchObject({ status: 400 })
+    await expect(authed.post('/api/models/batch-delete').send({ ids: [] })).resolves.toMatchObject({
+      status: 400
+    })
+    await expect(authed.post('/api/models/batch-delete').send({ ids: ['abc'] })).resolves.toMatchObject({
+      status: 400
+    })
+  })
+
   it('rejects requests without the required fields', async () => {
     const response = await authed.post('/api/models').field('name', 'x')
     expect(response.status).toBe(400)
@@ -376,6 +404,35 @@ describe('video API', () => {
     const id = await createDraft()
     await expect(authed.delete(`/api/videos/${id}`)).resolves.toMatchObject({ status: 200 })
     await expect(authed.get(`/api/videos/${id}`)).resolves.toMatchObject({ status: 404 })
+  })
+
+  it('batch deletes videos, reporting missing ids and cleaning media files', async () => {
+    const id1 = await createDraft()
+    const id2 = await createDraft()
+    fs.writeFileSync(path.join(dataDir, 'face2face', 'temp', 'batch.mp4'), 'fake-result')
+    fs.writeFileSync(path.join(dataDir, 'face2face', 'temp', 'batch.wav'), 'fake-audio')
+    await store.execute(
+      "UPDATE video SET file_path = 'temp/batch.mp4', audio_path = 'temp/batch.wav', status = 'success' WHERE id = ?",
+      [id1]
+    )
+
+    const response = await authed.post('/api/videos/batch-delete').send({ ids: [id1, id2, 99999] })
+    expect(response.status).toBe(200)
+    expect(response.body.deleted).toEqual([id1, id2])
+    expect(response.body.failed).toEqual([{ id: 99999, message: '作品不存在' }])
+    // A finished video has both the result mp4 and its TTS wav; both must disappear.
+    expect(fs.existsSync(path.join(dataDir, 'face2face', 'temp', 'batch.mp4'))).toBe(false)
+    expect(fs.existsSync(path.join(dataDir, 'face2face', 'temp', 'batch.wav'))).toBe(false)
+  })
+
+  it('rejects malformed ids on video batch delete', async () => {
+    await expect(authed.post('/api/videos/batch-delete').send({})).resolves.toMatchObject({ status: 400 })
+    await expect(authed.post('/api/videos/batch-delete').send({ ids: [] })).resolves.toMatchObject({
+      status: 400
+    })
+    await expect(authed.post('/api/videos/batch-delete').send({ ids: ['abc'] })).resolves.toMatchObject({
+      status: 400
+    })
   })
 
   it('reports 404 for unknown ids', async () => {

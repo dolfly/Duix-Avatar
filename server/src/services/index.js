@@ -126,7 +126,32 @@ export function createModelService({ modelDao, voiceDao, tts, media, log, defaul
     return true
   }
 
-  return { add, page, count, find, remove }
+  /**
+   * Delete several models in one request. Each id is handled independently so a
+   * missing row never aborts the rest; the result reports per-id success/failure so
+   * the client can surface partial failures instead of silently dropping them.
+   */
+  async function batchRemove(ids) {
+    const deleted = []
+    const failed = []
+    for (const rawId of ids || []) {
+      const id = Number(rawId)
+      if (!Number.isInteger(id) || id <= 0) {
+        failed.push({ id: rawId, message: '无效的 ID' })
+        continue
+      }
+      try {
+        const removed = await remove(id)
+        if (removed) deleted.push(id)
+        else failed.push({ id, message: '模特不存在' })
+      } catch (error) {
+        failed.push({ id, message: error?.message || '删除失败' })
+      }
+    }
+    return { deleted, failed }
+  }
+
+  return { add, page, count, find, remove, batchRemove }
 }
 
 function toModelDto(row) {
@@ -323,10 +348,36 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
   async function remove(id) {
     const row = await videoDao.selectByID(id)
     if (!row) return false
+    // A finished video carries both the result mp4 (`file_path`) and its TTS wav
+    // (`audio_path`); both must be cleaned up, so these are two independent `if`s.
     if (row.file_path) media.remove(row.file_path)
-    else if (row.audio_path) media.remove(row.audio_path)
+    if (row.audio_path) media.remove(row.audio_path)
     await videoDao.remove(id)
     return true
+  }
+
+  /**
+   * Delete several videos in one request (see `modelService.batchRemove` for the
+   * per-id contract; this reuses `remove` so media files are cleaned up identically).
+   */
+  async function batchRemove(ids) {
+    const deleted = []
+    const failed = []
+    for (const rawId of ids || []) {
+      const id = Number(rawId)
+      if (!Number.isInteger(id) || id <= 0) {
+        failed.push({ id: rawId, message: '无效的 ID' })
+        continue
+      }
+      try {
+        const removed = await remove(id)
+        if (removed) deleted.push(id)
+        else failed.push({ id, message: '作品不存在' })
+      } catch (error) {
+        failed.push({ id, message: error?.message || '删除失败' })
+      }
+    }
+    return { deleted, failed }
   }
 
   /** Submit one waiting video to the GPU services (worker holds the claim). */
@@ -449,7 +500,7 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
     return { status: 'failed' }
   }
 
-  return { page, find, count, save, modify, make, remove, synthesize, poll }
+  return { page, find, count, save, modify, make, remove, batchRemove, synthesize, poll }
 }
 
 function toVideoDto(row, { media, waitingIds = [] }) {
