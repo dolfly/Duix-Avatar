@@ -110,7 +110,13 @@ export function loadConfig(env = process.env) {
       // another inference. Fail-closed (cannot determine -> don't submit). Disable only
       // on hosts where the probe cannot run (see doc/web-deployment.md).
       vramCheck: bool(env.VIDEO_VRAM_CHECK, true),
-      minFreeVramMb: int(env.VIDEO_MIN_FREE_VRAM_MB, 2048),
+      // Incremental budget (MB) one inference needs *on top of* gen-video's already-resident
+      // VRAM, plus a safety margin. This is NOT a whole-card free lower bound: the whole-card
+      // free includes gen-video's own resident (~2.6-3.0 GiB, a one-time step after the first
+      // inference), so a whole-card floor above the steady-state free (~2017 MiB on CT131)
+      // would permanently block every submission after the first. Measured per-inference
+      // increment is ~1300 MiB; 1500 = 1300 + ~200 margin.
+      minFreeVramMb: int(env.VIDEO_MIN_FREE_VRAM_MB, 1500),
       smiBin: env.NVIDIA_SMI_BIN || 'nvidia-smi',
       probeTimeoutMs: int(env.VIDEO_VRAM_PROBE_TIMEOUT_MS, 5000)
     },

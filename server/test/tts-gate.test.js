@@ -159,6 +159,9 @@ describe('buildContext TTS gate wiring', () => {
         submit: vi.fn(async () => ({ code: 10000, msg: 'ok' })),
         query: vi.fn(async () => ({ code: 10000, data: { status: 1, progress: 0 } }))
       },
+      // Not a VRAM test: always admit, otherwise buildContext's real nvidia-smi probe would
+      // fail closed on a GPU-less CI host and requeue the video synthesis path.
+      vramGate: { canSubmit: async () => ({ ok: true, reason: null }) },
       env: {
         DATA_DIR: dataDir,
         WORKER_ENABLED: 'false',

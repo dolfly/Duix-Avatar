@@ -122,6 +122,10 @@ beforeEach(async () => {
   ctx = buildContext({
     store,
     logger: SILENT,
+    // These tests exercise the video/TTS paths but not the VRAM admission gate, so inject
+    // a gate that always admits. (Without it, buildContext wires the real nvidia-smi probe;
+    // on a GPU-less CI host that would fail closed and requeue every submission.)
+    vramGate: { canSubmit: async () => ({ ok: true, reason: null }) },
     env: {
       DATA_DIR: dataDir,
       TTS_BASE_URL: tts.baseUrl,

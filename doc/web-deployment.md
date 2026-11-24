@@ -153,7 +153,7 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 | `VIDEO_MAX_INFLIGHT` | `1` | 同时处于 GPU 处理中（submitting+pending）的视频任务上限 |
 | `VIDEO_TASK_TIMEOUT_MS` | `1800000` | 从认领到终态的总超时（ms，30 分钟），超时判 failed |
 | `VIDEO_VRAM_CHECK` | `true` | 提交前显存准入（fail-closed：查不到就不提交） |
-| `VIDEO_MIN_FREE_VRAM_MB` | `2048` | 目标卡可用显存低于此值（MB）时不提交 |
+| `VIDEO_MIN_FREE_VRAM_MB` | `1500` | 单次推理所需的**增量显存预算**（MB，= 实测增量 ~1300 + 余量），不是整卡空闲下限 |
 | `NVIDIA_SMI_BIN` | `nvidia-smi` | 显存探针所用的 nvidia-smi 路径 |
 | `VIDEO_VRAM_PROBE_TIMEOUT_MS` | `5000` | nvidia-smi 探针子进程超时（ms），避免每次提交引入秒级阻塞 |
 | `TTS_MAX_INFLIGHT` | `1` | 同一时刻允许在飞的 TTS 推理数（试听 / 视频 TTS / 音色克隆共用一道闸） |
@@ -240,10 +240,11 @@ CT131 曾经因为「任务失控 + 提交量失控」把整机拖死。为彻�
 3. **总超时 `VIDEO_TASK_TIMEOUT_MS`（默认 30 分钟）+ 单次 HTTP 超时**。每个任务从认领到终态
    （含 TTS + 提交 + 轮询）有个硬墙，超过就判 `failed` 并释放，不再永远占着队列和显卡；轮询
    gen-video 的单次请求已由 `FACE2FACE_TIMEOUT_MS`（默认 60s）兜底。
-4. **提交前显存准入（fail-closed）+ 容器资源上限**。提交前用 `nvidia-smi` 查目标卡可用显存，
-   低于 `VIDEO_MIN_FREE_VRAM_MB`（默认 2048 MB）或**查不到就不提交**（fail-closed），原因写进任务
-   `message` 与日志；`duix-gen-video` / `duix-tts` / `duix-asr` 三个容器都加了 `mem_limit` / `cpus` /
-   `pids_limit`，单容器触顶时宿主机整机仍可用，OOM killer 不会去掀 toonflow / scenoria / runvm。
+4. **提交前显存准入（fail-closed）+ 容器资源上限**。提交前用 `nvidia-smi` 查目标卡可用显存
+   的**增量预算**（见下），低于 `VIDEO_MIN_FREE_VRAM_MB`（默认 1500 MB）或**查不到就不提交**
+   （fail-closed），原因写进任务 `message` 与日志；`duix-gen-video` / `duix-tts` / `duix-asr` 三个
+   容器都加了 `mem_limit` / `cpus` / `pids_limit`，单容器触顶时宿主机整机仍可用，OOM killer
+   不会去掀 toonflow / scenoria / runvm。
 
 **显存探针怎么取到占用**：`duix-server` 容器以 `NVIDIA_DRIVER_CAPABILITIES=utility` 跑在 nvidia
 runtime 下（只挂 `nvidia-smi` + `libnvidia-ml`，不给 GPU 计算权），`NVIDIA_VISIBLE_DEVICES` 与 GPU
@@ -283,8 +284,31 @@ DO-120 的四道闸只挡**视频提交**，挡不住服务端自己直接发起
 单实例峰值（~3.6 GiB）内，不会再翻倍。
 
 > **边界与口径**：本例只做 TTS 的**并发预算**（默认 1），不动 DO-120 已验收的视频侧语义
-> （`VIDEO_MAX_INFLIGHT` / 显存门 / 超时 / 租约修正）。显存准入口径的改进（整卡 free → 增量
-> 预算 + 提交前二次检查）由 DO-146 单独负责，两个 issue 不改到同一块显存门里。
+> （`VIDEO_MAX_INFLIGHT` / 显存门 / 超时 / 租约修正）。两个 issue 不改到同一块显存门里。
+
+### 显存准入口径与提交前二次检查（DO-146）
+
+DO-120 的显存门把「整卡 free」当门槛，而 `VIDEO_MIN_FREE_VRAM_MB=2048` 这个阈值是「凑」出来的：
+
+- gen-video 的 ~2.6–3.0 GiB **常驻显存是首次真实推理之后才长出的一次性台阶**（不是启动预热）；
+- 三个模型容器（tts / gen-video / asr）挤同一张 P4000，稳态 free 固定在 ~2017 MiB；
+- 于是任何 `阈值 > 2017` 都会在首次推理之后**永久拒绝提交**（线上就是 2048 > 2035 ⇒ 视频功能 100% 静默停摆，`/api/health` 却仍是 `ok`）。
+
+**改成的口径**：门衡量「本次推理所需的**增量预算**」而不是「整卡空闲下限」。一次真实推理在 gen-video
+已常驻的显存之上只需要 **~1300 MiB 增量**（CT131 实测：稳态 free 2017 MiB，推理中最低 719 MiB），
+因此 `VIDEO_MIN_FREE_VRAM_MB` 的含义改为**单次推理增量预算 + 余量**，默认 **1500**（1300 + ~200 余量）。
+这是从「增量」推出的、与具体机器常驻无关的值，换卡/换机时只需重测增量改这个 knob。
+
+> **为什么不在运行时归因常驻**：`duix-server` 只有 `NVIDIA_DRIVER_CAPABILITIES=utility`（无算力），
+> 拿不到进程级显存归因，且 gen-video 是第三方镜像（本仓库改不了），没法让它自己暴露占用。所以
+> 采用**静态增量预算**：增量是配置项，探针仍只读 `nvidia-smi --query-gpu=memory.free`，失败时
+> fail-closed，延迟同 DO-120（子进程 + 5s 超时，正常几十毫秒）。
+
+**提交前二次检查**：DO-120 的门量在 TTS 之前，submit 在 TTS 之后，中间没有任何再查——视频自己的
+TTS 能把卡压到 free 只剩余量几百 MiB，提交时却不再过门。现在 `synthesize()` 在 `face2face.submit()`
+之前（TTS 之后）**再过一次同一道门**；不通过就把任务退回 `waiting`（`message` 写明等待理由），
+下个 tick 重新准入，不丢不失败。这道二次检查与 `VIDEO_MAX_INFLIGHT` **彼此独立**，但口径一致
+（同一 `VIDEO_MIN_FREE_VRAM_MB` 增量预算）。
 
 ---
 

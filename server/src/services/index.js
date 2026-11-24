@@ -338,7 +338,7 @@ function toAuditionDto(row) {
   }
 }
 
-export function createVideoService({ videoDao, modelDao, voiceService, media, tts, face2face, log }) {
+export function createVideoService({ videoDao, modelDao, voiceService, media, tts, face2face, log, gpuGate }) {
   async function page({ page = 1, pageSize = 10, name = '' } = {}) {
     const [total, rows, waiting] = await Promise.all([
       videoDao.count(name),
@@ -479,6 +479,23 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
     const current = await videoDao.selectByID(video.id)
     if (!current || current.status !== 'submitting') {
       return { status: 'failed' }
+    }
+
+    // Second admission check (DO-146): the first gate ran *before* TTS. The minutes-long
+    // TTS (and any orphan or concurrent work that grabbed the card meanwhile) can change
+    // the free memory before we submit, so re-check here and keep the task queued instead
+    // of launching inference onto an already-pressured card. This is the same increment
+    // budget as the first check, independent of VIDEO_MAX_INFLIGHT.
+    if (gpuGate) {
+      const gate = await gpuGate.canSubmit()
+      if (!gate.ok) {
+        const reason = gate.reason || 'GPU 显存准入未通过，等待'
+        log?.warn?.(`video ${video.id} TTS 后未提交: ${reason}`)
+        // Back to `waiting` so the worker re-admits it on a later tick (fresh started_at
+        // on the next claim); the claim itself is released by the worker's `finally`.
+        await videoDao.updateStatus(video.id, 'waiting', reason)
+        return { status: 'requeued' }
+      }
     }
 
     const code = randomId()
