@@ -9,6 +9,7 @@ import { createMediaStore } from './media/index.js'
 import { createFace2faceClient, createTtsClient } from './integrations/clients.js'
 import { createVramGate } from './integrations/gpu.js'
 import { createTtsGate } from './integrations/tts-gate.js'
+import { createGenVideoReaper } from './integrations/gen-video-reaper.js'
 import { createContextService, createModelService, createVideoService, createVoiceService, createAuditionService } from './services/index.js'
 import { createVideoWorker, createAuditionWorker, createModelTaskWorker } from './services/worker.js'
 import { createApp } from './routes/index.js'
@@ -55,6 +56,18 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
   // video-side `VIDEO_MAX_INFLIGHT` gate.
   const ttsGated = createTtsGate({ tts, maxInflight: config.tts.maxInflight, log })
 
+  // Abandoned-work reaper (DO-160): the total-timeout sweep can only fail our own row, so
+  // without this the gen-video thread of a timed-out task keeps rendering and dragging the
+  // card down. Default mode `none` (log-only) — `docker` needs the docker socket inside
+  // this container, which is an operator/compose decision (see doc/web-deployment.md).
+  const reaper = createGenVideoReaper({
+    mode: config.worker.reapMode,
+    container: config.worker.reapContainer,
+    minIntervalMs: config.worker.reapMinIntervalMs,
+    timeoutMs: config.worker.reapTimeoutMs,
+    log
+  })
+
   const services = {
     context: createContextService({ contextDao: daos.context }),
     model: createModelService({ modelDao: daos.model, voiceDao: daos.voice, tts: ttsGated, media, log, modelTaskDao: daos.modelTask }),
@@ -87,6 +100,8 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
         maxInflight: config.worker.maxInflight,
         intervalMs: config.worker.intervalMs,
         gpuGate,
+        reaper,
+        reapCooldownMs: config.worker.reapCooldownMs,
         log
       })
     : null
@@ -124,7 +139,7 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
 
   const app = createApp({ services, media, config, logger: log, worker, rqlite, auth })
 
-  return { config, log, media, rqlite, daos, services, worker, auditionWorker, modelTaskWorker, auth, app }
+  return { config, log, media, rqlite, daos, services, worker, reaper, auditionWorker, modelTaskWorker, auth, app }
 }
 
 async function main() {

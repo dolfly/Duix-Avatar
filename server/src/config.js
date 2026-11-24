@@ -1,6 +1,7 @@
 import path from 'node:path'
 
 import { hashPassword } from './auth.js'
+import { normalizeReapMode } from './integrations/gen-video-reaper.js'
 
 function int(value, fallback) {
   const parsed = Number.parseInt(value ?? '', 10)
@@ -103,7 +104,22 @@ export function loadConfig(env = process.env) {
       // that outlives this is marked failed by the worker so it can't occupy the queue
       // and the card forever. TTS is the long pole (minutes), so 30 min is generous.
       taskTimeoutMs: int(env.VIDEO_TASK_TIMEOUT_MS, 30 * 60 * 1000),
-      pollTimeoutMs: int(env.FACE2FACE_TIMEOUT_MS, 60 * 1000)
+      pollTimeoutMs: int(env.FACE2FACE_TIMEOUT_MS, 60 * 1000),
+      // Orphan cleanup (DO-160). The sweep above only fails *our* row; the inference
+      // thread inside the third-party gen-video image keeps running (no cancel API, no
+      // deadline parameter). `docker` mode restarts the gen-video container to actually
+      // stop that work; `none` (default) only logs, because restarting needs the docker
+      // socket inside duix-server (a compose/production change). See doc/web-deployment.md.
+      reapMode: normalizeReapMode(env.GEN_VIDEO_REAP_MODE),
+      reapContainer: env.GEN_VIDEO_REAP_CONTAINER || 'duix-gen-video',
+      // One reap attempt per window (attempts included): a permanently failing
+      // `docker restart` must not become a restart storm on every 2s tick.
+      reapMinIntervalMs: int(env.GEN_VIDEO_REAP_MIN_INTERVAL_MS, 5 * 60 * 1000),
+      reapTimeoutMs: int(env.GEN_VIDEO_REAP_TIMEOUT_MS, 30 * 1000),
+      // gen-video needs ~15s+ (image init + model load) before it accepts submits again,
+      // so the worker holds the queue for this long after a reap instead of failing the
+      // next task on a refusing socket.
+      reapCooldownMs: int(env.GEN_VIDEO_REAP_COOLDOWN_MS, 60 * 1000)
     },
     gpu: {
       // Admission check before submit: don't submit when the target card can't fit
