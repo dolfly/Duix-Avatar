@@ -65,7 +65,12 @@ export function loadConfig(env = process.env) {
       // image prepends its own media_path `/code/data`, so this must be a leading-slash
       // path RELATIVE to that root. Default `/` -> `/origin_audio/x.wav` -> the image
       // resolves `/code/data/origin_audio/x.wav`. `/code/data` here would double-prefix.
-      remoteDataRoot: normalizeBaseUrl(env.TTS_REMOTE_DATA_ROOT, '/')
+      remoteDataRoot: normalizeBaseUrl(env.TTS_REMOTE_DATA_ROOT, '/'),
+      // Concurrency gate (DO-124): how many TTS inferences may run at once. The TTS service
+      // is a single process whose VRAM grows from ~1.75 GiB idle to ~3.6 GiB mid-synthesis;
+      // two concurrent syntheses would double that on the shared card (the DO-118 shape).
+      // 1 => only one synthesis in flight, the rest queue FIFO (never dropped, never failed).
+      maxInflight: int(env.TTS_MAX_INFLIGHT, 1)
     },
     audition: {
       // A voice audition is a preview, not a full synthesis: cap the accepted text so
