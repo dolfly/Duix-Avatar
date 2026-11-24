@@ -23,6 +23,16 @@ let instance = null
 let loading = null
 const LOGS = []
 
+/**
+ * ffmpeg's message when the input has no audio stream at all (`-vn` maps `0:a`).
+ * Used to turn the generic "ffmpeg exit 1" into something the user can act on.
+ * Tolerate the optional `#0` ffmpeg 5.x/6.x add after the digit.
+ */
+const NO_AUDIO_STREAM_PATTERNS = [
+  /Output file #?\d* does not contain any stream/i,
+  /Stream map '0:a' matches no streams/i
+]
+
 function baseName(file) {
   return (file?.name || 'input').replace(/[^\w.-]/g, '_')
 }
@@ -121,11 +131,20 @@ export async function extractAudio(file) {
   const ffmpeg = await getFFmpeg()
   const input = `in-${baseName(file)}`
   const output = 'model-audio.wav'
+  const mark = LOGS.length
 
   try {
     await ffmpeg.writeFile(input, await fetchFile(file))
     const code = await ffmpeg.exec(['-i', input, '-vn', output])
-    if (code !== 0) throw new Error(`音频提取失败 (ffmpeg exit ${code})`)
+    if (code !== 0) {
+      // `-vn` on a video without an audio track is a user-fixable mistake, not an
+      // opaque "ffmpeg exit 1": read the captured ffmpeg log and say so.
+      const recent = LOGS.slice(mark).join('\n')
+      if (NO_AUDIO_STREAM_PATTERNS.some((pattern) => pattern.test(recent))) {
+        throw new Error('该视频没有音轨，请上传带声音的视频')
+      }
+      throw new Error(`音频提取失败 (ffmpeg exit ${code})`)
+    }
     const data = await ffmpeg.readFile(output)
     return new File([data], output, { type: 'audio/wav' })
   } finally {
