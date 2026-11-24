@@ -77,7 +77,30 @@ async function assertVersionedCoreUrl() {
   }
 }
 
+/**
+ * The reference audio must be extracted from the ORIGINAL upload, never from the
+ * `toH264` result: `toH264` transcodes with `-an` (video only), so its output has no
+ * audio track and `extractAudio` on it always fails. This shipped broken from the
+ * first web commit (`extractAudio(video)`) and only surfaced once the core loaded —
+ * fail the build if that call shape ever comes back.
+ */
+async function assertAudioFromOriginalUpload() {
+  const apiJs = path.join(rootDir, 'src', 'renderer', 'src', 'api', 'index.js')
+  const src = await readFile(apiJs, 'utf8')
+  if (/extractAudio\(\s*video\s*\)/.test(src)) {
+    throw new Error(
+      'src/renderer/src/api/index.js 不能对 toH264 的产物调用 extractAudio(video)：转码产物带 -an 没有音轨，必须从原始文件抽音频 extractAudio(videoPath)'
+    )
+  }
+  if (!/extractAudio\(\s*videoPath\s*\)/.test(src)) {
+    throw new Error(
+      'src/renderer/src/api/index.js 必须用 extractAudio(videoPath) 从原始上传文件提取参考音频'
+    )
+  }
+}
+
 await assertVersionedCoreUrl()
+await assertAudioFromOriginalUpload()
 const srcDir = await resolveCoreDir()
 await mkdir(outDir, { recursive: true })
 

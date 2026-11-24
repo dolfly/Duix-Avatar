@@ -182,8 +182,10 @@ const httpApi = {
       throw new Error('浏览器不支持文件上传')
     }
     const { toH264, extractAudio } = await import('@renderer/client/ffmpeg.js')
-    const video = await toH264(videoPath)
-    const audio = await extractAudio(video)
+    // The reference audio must come from the ORIGINAL upload: `toH264` transcodes with
+    // `-an` (video only, matching the desktop split of video / reference audio), so
+    // feeding its output to `extractAudio` always fails with "no audio stream".
+    const [video, audio] = await Promise.all([toH264(videoPath), extractAudio(videoPath)])
     const form = new FormData()
     form.append('name', name)
     form.append('video', video, video.name)
