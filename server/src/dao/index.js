@@ -348,9 +348,26 @@ export function createVideoDao(store) {
      * pipeline. Called at the top of each tick; `started_at` is the first-claim time, so
      * a gen-video that keeps answering "processing" can no longer occupy the queue and
      * the card forever. Also releases the claim so the row is fully free.
+     *
+     * Returns the abandoned tasks that carry a gen-video `code` (`[{id, code}]`), i.e. the
+     * ones whose inference thread is still running inside the third-party container after
+     * we gave up. The worker hands those codes to the reaper (DO-160); a task still in TTS
+     * has no code and therefore no GPU work to terminate, so it is not reported.
+     *
+     * The doomed rows are read before the UPDATE (rqlite has no reliable RETURNING across
+     * the HTTP API). Reaping is best-effort and idempotent, so two instances racing here
+     * can only cause a redundant reap attempt, never a missed one.
      */
     async failTimedOut(cutoffMs) {
-      return store.execute(
+      const doomed = await store.query(
+        `SELECT id, code FROM video
+          WHERE status IN ('submitting', 'pending')
+            AND started_at IS NOT NULL
+            AND started_at < ?`,
+        [cutoffMs]
+      )
+      if (!doomed.length) return []
+      await store.execute(
         `UPDATE video
             SET status = 'failed', message = '合成超时，已释放', claimed_by = NULL, claimed_at = NULL
           WHERE status IN ('submitting', 'pending')
@@ -358,6 +375,9 @@ export function createVideoDao(store) {
             AND started_at < ?`,
         [cutoffMs]
       )
+      return doomed
+        .map((row) => ({ id: Number(row.id), code: row.code ? String(row.code) : null }))
+        .filter((row) => row.code)
     },
 
     /** Surface a queue-wide wait reason on every `waiting` task (best effort, idempotent). */

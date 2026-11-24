@@ -156,6 +156,11 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 | `VIDEO_MIN_FREE_VRAM_MB` | `1500` | 单次推理所需的**增量显存预算**（MB，= 实测增量 ~1300 + 余量），不是整卡空闲下限 |
 | `NVIDIA_SMI_BIN` | `nvidia-smi` | 显存探针所用的 nvidia-smi 路径 |
 | `VIDEO_VRAM_PROBE_TIMEOUT_MS` | `5000` | nvidia-smi 探针子进程超时（ms），避免每次提交引入秒级阻塞 |
+| `GEN_VIDEO_REAP_MODE` | `none` | 超时放弃后如何清场：`none` 只记日志 / `docker` 重启 gen-video 容器（需 docker 套接字，见「孤儿清场（DO-160）」） |
+| `GEN_VIDEO_REAP_CONTAINER` | `duix-gen-video` | `docker` 模式下要重启的容器名 |
+| `GEN_VIDEO_REAP_MIN_INTERVAL_MS` | `300000` | 两次清场尝试的最小间隔（含失败尝试），防止重启风暴 |
+| `GEN_VIDEO_REAP_TIMEOUT_MS` | `30000` | `docker restart` 子进程超时（ms） |
+| `GEN_VIDEO_REAP_COOLDOWN_MS` | `60000` | 清场后暂停提交的时间（gen-video 重启 + 载模型期间不提交，避免下一条任务被拒连而失败） |
 | `TTS_MAX_INFLIGHT` | `1` | 同一时刻允许在飞的 TTS 推理数（试听 / 视频 TTS / 音色克隆共用一道闸） |
 | `GEN_VIDEO_MEM_LIMIT` / `GEN_VIDEO_CPUS` / `GEN_VIDEO_PIDS_LIMIT` | `8g` / `4` / `512` | gen-video 容器资源上限 |
 | `TTS_MEM_LIMIT` / `TTS_CPUS` / `TTS_PIDS_LIMIT` | `4g` / `2` / `512` | tts 容器资源上限 |
@@ -309,6 +314,65 @@ TTS 能把卡压到 free 只剩余量几百 MiB，提交时却不再过门。现
 之前（TTS 之后）**再过一次同一道门**；不通过就把任务退回 `waiting`（`message` 写明等待理由），
 下个 tick 重新准入，不丢不失败。这道二次检查与 `VIDEO_MAX_INFLIGHT` **彼此独立**，但口径一致
 （同一 `VIDEO_MIN_FREE_VRAM_MB` 增量预算）。
+
+### 孤儿清场：超时放弃后真正停掉 GPU 工作（DO-160）
+
+前面几道闸都只管「不再多提交」，但**已经提交的推理停不下来**：总超时只改我们自己的那一行
+（`status='failed'` + 释放 claim），gen-video 容器里的推理线程照旧渲染。DO-121 现场就是这么滚的：
+id=59 被判 `failed: 合成超时，已释放` 之后，gen-video 里 `828c7fe1` 仍跑到 900+ 帧、显存从
+2810 MiB 涨到 3742 MiB，把下一条任务（id=60）的 TTS 从 10.8 tokens/s 拖到 0.28 tokens/s（慢 38 倍），
+再撞 15 分钟 HTTP 超时 ⇒ 又一条卡死在 `submitting`。孤儿 → 拖慢 → 超时 → 又产孤儿。
+
+**为什么不能「给镜像传个 deadline 让它自停」**：gen-video 是第三方镜像 `guiji2025/*`，本仓库改不了。
+实测（CT131，2026-11-24）`/code/app_local.py` 只有两个路由：`/easy/submit` 接受
+`audio_url` / `video_url` / `code` / `watermark_switch` / `digital_auth` / `chaofen` / `pn`，**没有
+超时、心跳或取消参数**；`/easy/query` 只读内存里的 `task_dic`，也没有取消副作用。所以镜像内
+没有任何「不重建镜像就能触发」的自停机制。
+
+**服务端可行的兜底**：唯一真正持有 GPU 工作的是 gen-video 容器进程，因此清场 = 重启该容器。
+服务端在总超时扫描（`failTimedOut`）拿到被放弃任务的 `code` 后交给 reaper：
+
+| `GEN_VIDEO_REAP_MODE` | 行为 | 适用 |
+|---|---|---|
+| `none`（默认） | 只写一条 `warn` 日志（含被放弃的 `code`），**不动容器** | 默认。`duix-server` 没有 docker 套接字，改 compose 属于生产变更 |
+| `docker` | `docker restart <GEN_VIDEO_REAP_CONTAINER>`（默认 `duix-gen-video`） | 已把 docker CLI + `/var/run/docker.sock` 挂进 `duix-server` 的部署 |
+
+启用 `docker` 模式需要的最小 compose 改动（**生产变更，本 issue 不做**）：
+
+```yaml
+  duix-server:
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - /var/run/docker.sock:/var/run/docker.sock   # 新增：清场用
+      # 镜像里没有 docker CLI，二选一：把 CLI 装进 deploy/server.Dockerfile，
+      # 或挂宿主机的 /usr/bin/docker:/usr/bin/docker:ro
+```
+
+**爆炸半径（启用 `docker` 前必读）**：
+
+- 容器内**所有**推理线程一起死，不只是被放弃的那条。实际影响有限：`VIDEO_MAX_INFLIGHT=1` 时服务端
+  同一时刻只有一条在飞，且镜像自身对并发 submit 返回 `10001 忙碌中`，所以受害者是被放弃的任务
+  加上「同一窗口内刚提交的那一条」。
+- gen-video 的 `task_dic` 只在内存里，重启后其它 `pending` 任务查出来是 `10004 任务不存在`。
+  `poll()` 现在把 10004 当**快速失败**（`gen-video 侧任务已不存在（服务可能已重启），任务终止`），
+  不再落到「未知状态码」分支干等 30 分钟总超时。
+- 重启期间容器不可用（镜像初始化 + 模型加载，CT131 上 ~15s 以上）。worker 因此在清场后进入
+  `GEN_VIDEO_REAP_COOLDOWN_MS`（默认 60s）冷却期，期间**不提交**，否则下一条排队任务会撞上
+  拒连而失败。
+- 需要 `docker` CLI + 套接字，等价于把宿主机 root 权限给 `duix-server`；这是**生产决策**，
+  所以默认 `none`，是否启用由运维/负责人定。
+- 清场尝试自带节流（`GEN_VIDEO_REAP_MIN_INTERVAL_MS`，默认 5 分钟，失败尝试也计入），
+  docker 守护进程挂掉不会变成每 2s 一次的重启风暴。
+
+**同一轮里修掉的第二个孤儿源**：`synthesize()` 里 TTS 调用（`voiceService.makeAudio`）原本在 `try`
+之外，TTS 抛错（15 分钟 HTTP 超时 / 5xx / 连接重置）会直接冒泡出 `synthesize`，`status='failed'`
+永远不执行 ⇒ 任务卡在 `submitting`，白占一个 `VIDEO_MAX_INFLIGHT` 槽位直到 30 分钟兜底。
+现在整个 TTS 阶段都在错误边界内：失败即落 `failed` + 明确 `message`（超时与一般失败文案不同），
+不会再有「静默卡住」的任务。
+
+> **仍未覆盖的残留**：TTS 侧排队中的孤儿（任务被判超时后，已在 TTS 闸里排队的那次调用仍会在拿到
+> 槽位后执行一次）不在本次范围——它需要把 DO-124 的 TTS 闸改成可中断语义，属于已验收闸的语义变更。
+> 影响是白烧一次 TTS 时间，不会重复提交 gen-video（`submitting` 检查会拦住）。
 
 ---
 

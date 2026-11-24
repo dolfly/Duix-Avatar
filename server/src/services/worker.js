@@ -9,7 +9,10 @@ import { randomUUID } from 'node:crypto'
  *   - a `waiting` task is atomically moved to `submitting` (never claimed twice)
  *   - `pending` tasks are leased with an atomic UPDATE (rows_affected == 1)
  *   - the total-timeout sweep fails tasks that stay in the GPU pipeline too long, so a
- *     stuck gen-video can neither occupy the queue nor the card forever
+ *     stuck gen-video can neither occupy the queue nor the card forever, and hands the
+ *     abandoned gen-video codes to the reaper so the inference thread inside the
+ *     third-party container is actually terminated (DO-160) instead of becoming an orphan
+ *     that keeps rendering and slows every later task
  *   - the in-flight cap and the GPU memory gate run before submit, so submission volume
  *     can never outrun the single card
  *
@@ -23,12 +26,18 @@ export function createVideoWorker({
   maxInflight = 1,
   intervalMs = 2000,
   gpuGate,
+  reaper,
+  reapCooldownMs = 60 * 1000,
   log,
   timers = { setInterval, clearInterval },
   now = () => Date.now()
 }) {
   let timer = null
   let stopped = true
+  // gen-video needs ~15s+ (image init + model load) before it accepts submits again, so a
+  // reap is followed by a submit cooldown: submitting into the restarting container would
+  // fail the next queued task for a reason unrelated to that task.
+  let cooldownUntil = 0
 
   const instanceId = `server-${process.pid}-${randomUUID().slice(0, 8)}`
 
@@ -40,10 +49,32 @@ export function createVideoWorker({
     }
   }
 
+  /**
+   * Terminate the GPU work of tasks the sweep just abandoned. Best-effort: the reaper
+   * never throws, and a reaper failure must not stop the tick from draining the queue.
+   * @returns {Promise<boolean>} true when the container was actually restarted.
+   */
+  async function reapAbandoned(abandoned) {
+    if (!reaper || !abandoned?.length) return false
+    try {
+      const result = await reaper.reap(abandoned.map((task) => task.code))
+      return Boolean(result?.reaped)
+    } catch (error) {
+      log?.error?.(`gen-video 清场失败: ${error?.message || error}`)
+      return false
+    }
+  }
+
   async function tick() {
+    const tickAt = now()
+
     // 1. Total-timeout sweep: any task stuck past its window (submitting or pending)
     //    becomes failed and is released. This is the "stuck task releases the card" fix.
-    await videoDao.failTimedOut(now() - taskTimeoutMs)
+    //    The abandoned codes are then reaped so the container-side thread dies with them.
+    const abandoned = await videoDao.failTimedOut(tickAt - taskTimeoutMs)
+    if (abandoned?.length && (await reapAbandoned(abandoned))) {
+      cooldownUntil = tickAt + reapCooldownMs
+    }
 
     let task = null
     try {
@@ -65,6 +96,13 @@ export function createVideoWorker({
       }
       // None claimable: other instances hold the pending leases. Fall through to the
       // submit phase; the in-flight cap below decides whether the card has room.
+
+      // 2b. Reaping cooldown: the gen-video container is restarting, so submitting now
+      //     would only produce a connection-refused failure. The queue keeps waiting.
+      if (tickAt < cooldownUntil) {
+        log?.debug?.(`gen-video 清场冷却中（剩 ${cooldownUntil - tickAt}ms），本 tick 不提交`)
+        return
+      }
 
       // 3. Submit phase: only when there is something waiting to run.
       const waiting = await videoDao.findFirstByStatus('waiting')

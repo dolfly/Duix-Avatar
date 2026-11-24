@@ -463,13 +463,27 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
 
     let audioRelative = video.audio_path
     if (!audioRelative) {
-      const voiceId = video.voice_id ?? model.voice_id
-      const voice = voiceId ? await voiceService.find(voiceId) : null
-      if (!voice) {
-        await videoDao.updateStatus(video.id, 'failed', '未选择音色或音色已被删除')
+      // The whole TTS phase is inside the error boundary: `makeAudio` used to sit outside
+      // the `try` below, so a TTS failure (timeout, 5xx, socket reset) bubbled straight out
+      // of `synthesize` and the `status:'failed'` write never ran. The task then sat in
+      // `submitting` until the 30-minute total-timeout sweep — a stuck row that also held
+      // the single in-flight slot and blocked the whole queue (DO-160).
+      try {
+        const voiceId = video.voice_id ?? model.voice_id
+        const voice = voiceId ? await voiceService.find(voiceId) : null
+        if (!voice) {
+          await videoDao.updateStatus(video.id, 'failed', '未选择音色或音色已被删除')
+          return { status: 'failed' }
+        }
+        audioRelative = await voiceService.makeAudio({ voice, text: video.text_content })
+      } catch (error) {
+        const message = isTimeoutError(error)
+          ? `音色合成超时，任务已终止: ${error?.message || error}`
+          : `音色合成失败: ${error?.message || error}`
+        log?.error?.(`video ${video.id} 音色合成失败: ${error?.message || error}`)
+        await videoDao.updateStatus(video.id, 'failed', message)
         return { status: 'failed' }
       }
-      audioRelative = await voiceService.makeAudio({ voice, text: video.text_content })
     }
 
     // The total-timeout sweep runs on a timer while TTS is busy here. It may have
@@ -547,8 +561,16 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
     }
 
     const code = Number(result?.code)
-    if ([9999, 10002, 10003].includes(code)) {
-      await videoDao.updateStatus(video.id, 'failed', result?.msg || `合成失败(${code})`)
+    // 10004 = gen-video has no such code. That happens when the container restarted (its
+    // `task_dic` is in memory only) — e.g. after the DO-160 reaper cleared an orphan. The
+    // task can never complete, so fail it now with an explicit message instead of falling
+    // into the "unknown code" branch and waiting out the 30-minute total timeout.
+    if ([9999, 10002, 10003, 10004].includes(code)) {
+      const message =
+        code === 10004
+          ? 'gen-video 侧任务已不存在（服务可能已重启），任务终止'
+          : result?.msg || `合成失败(${code})`
+      await videoDao.updateStatus(video.id, 'failed', message)
       return { status: 'failed' }
     }
 
