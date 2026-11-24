@@ -156,6 +156,7 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 | `VIDEO_MIN_FREE_VRAM_MB` | `2048` | 目标卡可用显存低于此值（MB）时不提交 |
 | `NVIDIA_SMI_BIN` | `nvidia-smi` | 显存探针所用的 nvidia-smi 路径 |
 | `VIDEO_VRAM_PROBE_TIMEOUT_MS` | `5000` | nvidia-smi 探针子进程超时（ms），避免每次提交引入秒级阻塞 |
+| `TTS_MAX_INFLIGHT` | `1` | 同一时刻允许在飞的 TTS 推理数（试听 / 视频 TTS / 音色克隆共用一道闸） |
 | `GEN_VIDEO_MEM_LIMIT` / `GEN_VIDEO_CPUS` / `GEN_VIDEO_PIDS_LIMIT` | `8g` / `4` / `512` | gen-video 容器资源上限 |
 | `TTS_MEM_LIMIT` / `TTS_CPUS` / `TTS_PIDS_LIMIT` | `4g` / `2` / `512` | tts 容器资源上限 |
 | `ASR_MEM_LIMIT` / `ASR_CPUS` / `ASR_PIDS_LIMIT` | `2g` / `1` / `256` | asr 容器资源上限 |
@@ -259,6 +260,31 @@ runtime 下（只挂 `nvidia-smi` + `libnvidia-ml`，不给 GPU 计算权），`
 > **边界**：gen-video 镜像内部的 Python（`/code/app_local.py` 每次 submit 起一个线程、容器内线程
 > 无上限）是第三方镜像，本仓库改不了；容器内线程无上限的问题靠「服务端不再乱提交」（在飞上限 +
 > 显存准入）来缓解。
+
+### TTS 并发闸（DO-124）
+
+DO-120 的四道闸只挡**视频提交**，挡不住服务端自己直接发起的 **TTS** 调用——而 DO-118 的事故现场
+正是 TTS（不是 gen-video）把 P4000 压满：TTS 是单进程，但长合成时单个实例就能从 ~1.75 GiB 涨到
+~3.6 GiB 显存，并发两个等于翻倍。
+
+为堵住这条路径，服务端在所有 TTS 调用点外面套了一道**共享的单槽信号量**（`TTS_MAX_INFLIGHT`，
+默认 1），覆盖三条入口：
+
+- **试听预览**（audition worker → `voiceService.makeAudio`）
+- **视频合成自己的 TTS**（`videoService.synthesize` → `voiceService.makeAudio`）
+- **音色克隆**（model task worker → `tts.preprocessAndTran`）
+
+三道入口最终都汇到同一个 `createTtsClient` 实例，因此闸只需包在那一处就能覆盖全部：**同一时刻
+只有 1 个 TTS 推理在飞**，后来的请求按 FIFO 排队等待，**不丢、不失败**。这与视频侧的
+`VIDEO_MAX_INFLIGHT` 是**彼此独立**的两个口径——前者限制「GPU 推理在飞数」，后者限制「TTS 在飞数」。
+
+排队是**可观测**的：排队与获槽时各写一条日志（`等待 TTS 推理槽位` / `获得 TTS 推理槽位`，附带
+排队长度与等待时长），不含任何凭据。`TTS_MAX_INFLIGHT=1` 的效果是 TTS 侧的显存峰值被钉死在
+单实例峰值（~3.6 GiB）内，不会再翻倍。
+
+> **边界与口径**：本例只做 TTS 的**并发预算**（默认 1），不动 DO-120 已验收的视频侧语义
+> （`VIDEO_MAX_INFLIGHT` / 显存门 / 超时 / 租约修正）。显存准入口径的改进（整卡 free → 增量
+> 预算 + 提交前二次检查）由 DO-146 单独负责，两个 issue 不改到同一块显存门里。
 
 ---
 

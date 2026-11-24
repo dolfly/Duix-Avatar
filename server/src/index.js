@@ -8,6 +8,7 @@ import { createContextDao, createModelDao, createVideoDao, createVoiceDao, creat
 import { createMediaStore } from './media/index.js'
 import { createFace2faceClient, createTtsClient } from './integrations/clients.js'
 import { createVramGate } from './integrations/gpu.js'
+import { createTtsGate } from './integrations/tts-gate.js'
 import { createContextService, createModelService, createVideoService, createVoiceService, createAuditionService } from './services/index.js'
 import { createVideoWorker, createAuditionWorker, createModelTaskWorker } from './services/worker.js'
 import { createApp } from './routes/index.js'
@@ -37,10 +38,16 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
   const tts = ttsClient || createTtsClient({ ...config.tts, log })
   const face2face = face2faceClient || createFace2faceClient({ ...config.face2face, log })
 
+  // Every TTS call the server makes (audition preview, video TTS, voice cloning) funnels
+  // through this one client, so gating it here shares a single slot across all three
+  // entry points. `maxInflight` limits concurrent TTS inferences independently of the
+  // video-side `VIDEO_MAX_INFLIGHT` gate.
+  const ttsGated = createTtsGate({ tts, maxInflight: config.tts.maxInflight, log })
+
   const services = {
     context: createContextService({ contextDao: daos.context }),
-    model: createModelService({ modelDao: daos.model, voiceDao: daos.voice, tts, media, log, modelTaskDao: daos.modelTask }),
-    voice: createVoiceService({ voiceDao: daos.voice, tts, media, log })
+    model: createModelService({ modelDao: daos.model, voiceDao: daos.voice, tts: ttsGated, media, log, modelTaskDao: daos.modelTask }),
+    voice: createVoiceService({ voiceDao: daos.voice, tts: ttsGated, media, log })
   }
   services.audition = createAuditionService({
     auditionDao: daos.audition,
