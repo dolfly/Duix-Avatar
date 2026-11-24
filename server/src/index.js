@@ -18,7 +18,7 @@ import { createAuthService } from './auth.js'
  * Wire configuration, stores, services and the http app together.
  * Exported so tests can build a fully-formed instance with stubs.
  */
-export function buildContext({ env = process.env, logger, store, ttsClient, face2faceClient } = {}) {
+export function buildContext({ env = process.env, logger, store, ttsClient, face2faceClient, vramGate } = {}) {
   const config = loadConfig(env)
   const log = logger || createLogger({ level: config.logLevel })
 
@@ -37,6 +37,17 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
   }
   const tts = ttsClient || createTtsClient({ ...config.tts, log })
   const face2face = face2faceClient || createFace2faceClient({ ...config.face2face, log })
+
+  // GPU memory admission gate, shared by the worker's pre-TTS check and the video
+  // service's post-TTS re-check so both consult the same increment budget (DO-146).
+  const gpuGate = vramGate
+    || createVramGate({
+      enabled: config.gpu.vramCheck,
+      bin: config.gpu.smiBin,
+      minFreeMb: config.gpu.minFreeVramMb,
+      timeoutMs: config.gpu.probeTimeoutMs,
+      log
+    })
 
   // Every TTS call the server makes (audition preview, video TTS, voice cloning) funnels
   // through this one client, so gating it here shares a single slot across all three
@@ -63,7 +74,8 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
     media,
     tts,
     face2face,
-    log
+    log,
+    gpuGate
   })
 
   const worker = config.worker.enabled
@@ -74,13 +86,7 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
         taskTimeoutMs: config.worker.taskTimeoutMs,
         maxInflight: config.worker.maxInflight,
         intervalMs: config.worker.intervalMs,
-        gpuGate: createVramGate({
-          enabled: config.gpu.vramCheck,
-          bin: config.gpu.smiBin,
-          minFreeMb: config.gpu.minFreeVramMb,
-          timeoutMs: config.gpu.probeTimeoutMs,
-          log
-        }),
+        gpuGate,
         log
       })
     : null
