@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { readMp4Duration } from './mp4-duration.js'
+import { readWavDuration } from './wav-duration.js'
 
 /**
  * Filesystem layout (relative to DATA_DIR):
@@ -108,6 +109,37 @@ export function createMediaStore({ dataDir, face2face, tts, publicBaseUrl = '', 
     }
   }
 
+  /**
+   * Read duration of a TTS-produced WAV (no ffmpeg involved). Only the chunk headers are
+   * read (64 KiB is far more than the `fmt ` / `data` headers need); the real file size is
+   * passed so a streaming header with an unknown `data` size still yields a duration.
+   * Returns seconds or null when the file is missing / not a readable WAV.
+   */
+  function probeAudioDuration(relative) {
+    if (!relative) return null
+    let fd = null
+    try {
+      const target = safeResolve(relative)
+      const { size } = fs.statSync(target)
+      if (!size) return null
+      fd = fs.openSync(target, 'r')
+      const length = Math.min(size, 64 * 1024)
+      const header = Buffer.alloc(length)
+      const read = fs.readSync(fd, header, 0, length, 0)
+      return readWavDuration(header.subarray(0, read), size)
+    } catch {
+      return null
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
   return {
     root,
     face2faceRoot,
@@ -124,7 +156,8 @@ export function createMediaStore({ dataDir, face2face, tts, publicBaseUrl = '', 
     copyToOriginAudio,
     toFace2faceRemotePath,
     toTtsRemotePath,
-    probeDuration
+    probeDuration,
+    probeAudioDuration
   }
 }
 

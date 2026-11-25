@@ -100,10 +100,19 @@ export function loadConfig(env = process.env) {
       // is a single process, one thread per submit, on a single card, so 1 is the safe
       // default: concurrent inference would thrash the 8 GiB card.
       maxInflight: int(env.VIDEO_MAX_INFLIGHT, 1),
-      // Hard wall from first claim to a terminal status (TTS + submit + poll). A task
-      // that outlives this is marked failed by the worker so it can't occupy the queue
-      // and the card forever. TTS is the long pole (minutes), so 30 min is generous.
+      // Fixed part of the per-task total timeout, and the fallback window whenever the audio
+      // length is unknown (no audio yet / unreadable header). A task that outlives its window
+      // is marked failed by the worker so it can't occupy the queue and the card forever.
       taskTimeoutMs: int(env.VIDEO_TASK_TIMEOUT_MS, 30 * 60 * 1000),
+      // Dynamic part (DO-161): extra window per second of *audio*. Inference time grows with
+      // the audio length (~115x realtime measured on the throttled P4000: 5.8s -> ~2 min,
+      // 36s -> >60 min), so a fixed 30 min killed every normal task above ~30s of audio.
+      // 180x = measured worst slope + ~50% thermal-throttling margin.
+      taskTimeoutPerSecondMs: int(env.VIDEO_TASK_TIMEOUT_PER_SEC_MS, 180000),
+      // Absolute cap for the dynamic window: never infinite, so a genuinely stuck inference
+      // is still failed (and reaped) in a finite time instead of holding the only card slot
+      // forever. 12h covers ~4 min of audio at 180x; raise it for longer scripts.
+      taskTimeoutMaxMs: int(env.VIDEO_TASK_TIMEOUT_MAX_MS, 12 * 60 * 60 * 1000),
       pollTimeoutMs: int(env.FACE2FACE_TIMEOUT_MS, 60 * 1000),
       // Orphan cleanup (DO-160). The sweep above only fails *our* row; the inference
       // thread inside the third-party gen-video image keeps running (no cancel API, no

@@ -88,7 +88,13 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
     tts,
     face2face,
     log,
-    gpuGate
+    gpuGate,
+    // Dynamic per-task timeout window (DO-161): computed once the audio length is known.
+    taskTimeout: {
+      baseMs: config.worker.taskTimeoutMs,
+      perSecondMs: config.worker.taskTimeoutPerSecondMs,
+      maxMs: config.worker.taskTimeoutMaxMs
+    }
   })
 
   const worker = config.worker.enabled
@@ -97,6 +103,8 @@ export function buildContext({ env = process.env, logger, store, ttsClient, face
         videoService: services.video,
         leaseMs: config.worker.leaseMs,
         taskTimeoutMs: config.worker.taskTimeoutMs,
+        taskTimeoutPerSecondMs: config.worker.taskTimeoutPerSecondMs,
+        taskTimeoutMaxMs: config.worker.taskTimeoutMaxMs,
         maxInflight: config.worker.maxInflight,
         intervalMs: config.worker.intervalMs,
         gpuGate,
