@@ -12,7 +12,9 @@ import { randomUUID } from 'node:crypto'
  *     stuck gen-video can neither occupy the queue nor the card forever, and hands the
  *     abandoned gen-video codes to the reaper so the inference thread inside the
  *     third-party container is actually terminated (DO-160) instead of becoming an orphan
- *     that keeps rendering and slows every later task
+ *     that keeps rendering and slows every later task. The window is per task: the audio
+ *     length is only known after TTS, so `synthesize` persists `deadline_at` and the sweep
+ *     falls back to `taskTimeoutMs` when it is absent (DO-161)
  *   - the in-flight cap and the GPU memory gate run before submit, so submission volume
  *     can never outrun the single card
  *
@@ -23,6 +25,10 @@ export function createVideoWorker({
   videoService,
   leaseMs = 120000,
   taskTimeoutMs = 30 * 60 * 1000,
+  // Reported in the startup log only: the sweep itself is deadline-driven (`video.deadline_at`,
+  // written by `synthesize`), so these two knobs document the window the service computes.
+  taskTimeoutPerSecondMs = 180000,
+  taskTimeoutMaxMs = 12 * 60 * 60 * 1000,
   maxInflight = 1,
   intervalMs = 2000,
   gpuGate,
@@ -68,10 +74,12 @@ export function createVideoWorker({
   async function tick() {
     const tickAt = now()
 
-    // 1. Total-timeout sweep: any task stuck past its window (submitting or pending)
-    //    becomes failed and is released. This is the "stuck task releases the card" fix.
-    //    The abandoned codes are then reaped so the container-side thread dies with them.
-    const abandoned = await videoDao.failTimedOut(tickAt - taskTimeoutMs)
+    // 1. Total-timeout sweep: any task stuck past *its* window (submitting or pending)
+    //    becomes failed and is released. Tasks whose audio length is known carry an
+    //    absolute `deadline_at`; the rest fall back to `started_at + taskTimeoutMs`. This is
+    //    the "stuck task releases the card" fix. The abandoned codes are then reaped so the
+    //    container-side thread dies with them.
+    const abandoned = await videoDao.failTimedOut({ now: tickAt, baseTimeoutMs: taskTimeoutMs })
     if (abandoned?.length && (await reapAbandoned(abandoned))) {
       cooldownUntil = tickAt + reapCooldownMs
     }
@@ -155,7 +163,15 @@ export function createVideoWorker({
         tick().catch(() => {})
       }, intervalMs)
       timer?.unref?.()
-      log?.info?.('video worker started', { instanceId, intervalMs, leaseMs, taskTimeoutMs, maxInflight })
+      log?.info?.('video worker started', {
+        instanceId,
+        intervalMs,
+        leaseMs,
+        taskTimeoutMs,
+        taskTimeoutPerSecondMs,
+        taskTimeoutMaxMs,
+        maxInflight
+      })
       return this
     },
 

@@ -294,12 +294,13 @@ export function createVideoDao(store) {
      * The in-flight admission gate is enforced atomically in the same statement (rqlite
      * runs it as a transaction), so two racing workers can never both sneak a task past
      * the `maxInflight` cap. `started_at` is (re)set here: a re-queued task gets a fresh
-     * total-timeout window.
+     * total-timeout window, and `deadline_at` is cleared with it so a stale dynamic
+     * deadline (DO-161) can never outlive the claim that produced it.
      */
     async claimWaiting(id, { claimedBy, maxInflight, now = Date.now() }) {
       const result = await store.execute(
         `UPDATE video
-            SET status = 'submitting', claimed_by = ?, claimed_at = ?, started_at = ?
+            SET status = 'submitting', claimed_by = ?, claimed_at = ?, started_at = ?, deadline_at = NULL
           WHERE id = ?
             AND status = 'waiting'
             AND (SELECT COUNT(*) FROM video WHERE status IN ('submitting', 'pending')) < ?`,
@@ -344,10 +345,24 @@ export function createVideoDao(store) {
     },
 
     /**
-     * Fail every task that has spent longer than its total timeout inside the GPU
-     * pipeline. Called at the top of each tick; `started_at` is the first-claim time, so
-     * a gen-video that keeps answering "processing" can no longer occupy the queue and
-     * the card forever. Also releases the claim so the row is fully free.
+     * Persist the dynamic total-timeout deadline (DO-161) computed once the audio length is
+     * known. Scoped to `submitting` so a task the sweep already abandoned can never be
+     * revived by a late write; returns false when the row is no longer ours to submit.
+     */
+    async setDeadline(id, deadlineAt) {
+      const result = await store.execute(
+        'UPDATE video SET deadline_at = ? WHERE id = ? AND status = ?',
+        [deadlineAt, id, 'submitting']
+      )
+      return Number(result.rowsAffected) === 1
+    },
+
+    /**
+     * Fail every task whose total-timeout window has elapsed inside the GPU pipeline.
+     * Called at the top of each tick; the window is per task (DO-161):
+     * `deadline_at` when the audio length was known, otherwise `started_at + baseTimeoutMs`.
+     * Either way a task can no longer occupy the queue and the card forever. Also releases
+     * the claim so the row is fully free.
      *
      * Returns the abandoned tasks that carry a gen-video `code` (`[{id, code}]`), i.e. the
      * ones whose inference thread is still running inside the third-party container after
@@ -358,13 +373,14 @@ export function createVideoDao(store) {
      * the HTTP API). Reaping is best-effort and idempotent, so two instances racing here
      * can only cause a redundant reap attempt, never a missed one.
      */
-    async failTimedOut(cutoffMs) {
+    async failTimedOut({ now = Date.now(), baseTimeoutMs = 0 } = {}) {
+      const base = Number(baseTimeoutMs) > 0 ? Number(baseTimeoutMs) : 0
       const doomed = await store.query(
         `SELECT id, code FROM video
           WHERE status IN ('submitting', 'pending')
             AND started_at IS NOT NULL
-            AND started_at < ?`,
-        [cutoffMs]
+            AND COALESCE(deadline_at, started_at + ?) < ?`,
+        [base, now]
       )
       if (!doomed.length) return []
       await store.execute(
@@ -372,8 +388,8 @@ export function createVideoDao(store) {
             SET status = 'failed', message = '合成超时，已释放', claimed_by = NULL, claimed_at = NULL
           WHERE status IN ('submitting', 'pending')
             AND started_at IS NOT NULL
-            AND started_at < ?`,
-        [cutoffMs]
+            AND COALESCE(deadline_at, started_at + ?) < ?`,
+        [base, now]
       )
       return doomed
         .map((row) => ({ id: Number(row.id), code: row.code ? String(row.code) : null }))

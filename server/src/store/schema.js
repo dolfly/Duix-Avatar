@@ -137,6 +137,17 @@ export const migrations = [
            claimed_at INTEGER
        )`
     ]
+  },
+  {
+    // Per-task total-timeout deadline (DO-161). Inference time scales with the audio
+    // length, so the window is computed once the audio is known (after TTS) and persisted
+    // here; the sweep compares `deadline_at` instead of a single global cutoff. NULL means
+    // "no dynamic window yet" (still in TTS, or the length could not be read) and falls
+    // back to `started_at + VIDEO_TASK_TIMEOUT_MS`.
+    // NOTE: v8 is the next free number - reusing an existing one makes `migrate()` skip
+    // the statement silently (it only applies versions newer than the stored db_version).
+    version: 8,
+    statements: [`ALTER TABLE video ADD COLUMN deadline_at INTEGER`]
   }
 ]
 

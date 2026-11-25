@@ -103,7 +103,10 @@ services:
       # GPU inference admission gates (DO-120): in-flight cap, total task timeout, and a
       # fail-closed VRAM check before submit. Defaults tuned for a single 8 GiB card.
       VIDEO_MAX_INFLIGHT: ${VIDEO_MAX_INFLIGHT:-1}
+      # Per-task timeout window (DO-161): fixed part + per-second-of-audio part, absolute cap.
       VIDEO_TASK_TIMEOUT_MS: ${VIDEO_TASK_TIMEOUT_MS:-1800000}
+      VIDEO_TASK_TIMEOUT_PER_SEC_MS: ${VIDEO_TASK_TIMEOUT_PER_SEC_MS:-180000}
+      VIDEO_TASK_TIMEOUT_MAX_MS: ${VIDEO_TASK_TIMEOUT_MAX_MS:-43200000}
       VIDEO_VRAM_CHECK: ${VIDEO_VRAM_CHECK:-true}
       VIDEO_MIN_FREE_VRAM_MB: ${VIDEO_MIN_FREE_VRAM_MB:-2048}
       NVIDIA_SMI_BIN: ${NVIDIA_SMI_BIN:-nvidia-smi}

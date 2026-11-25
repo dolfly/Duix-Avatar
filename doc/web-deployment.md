@@ -151,7 +151,9 @@ docker compose ps           # 等 duix-rqlite / duix-server / duix-web 变为 he
 | `WORKER_INTERVAL_MS` | `2000` | worker 轮询间隔 |
 | `WORKER_LEASE_MS` | `120000` | 任务租约时长（多实例防重复） |
 | `VIDEO_MAX_INFLIGHT` | `1` | 同时处于 GPU 处理中（submitting+pending）的视频任务上限 |
-| `VIDEO_TASK_TIMEOUT_MS` | `1800000` | 从认领到终态的总超时（ms，30 分钟），超时判 failed |
+| `VIDEO_TASK_TIMEOUT_MS` | `1800000` | 每个任务超时窗口的**固定部分**（ms，30 分钟）：认领 + TTS + 提交 + 模型预热；音频时长未知时的回退窗口 |
+| `VIDEO_TASK_TIMEOUT_PER_SEC_MS` | `180000` | 动态部分：每 1 秒音频增加的窗口（ms）。窗口 = `min(MAX, BASE + ceil(音频秒数) × PER_SEC)`，从首次认领 `started_at` 起算 |
+| `VIDEO_TASK_TIMEOUT_MAX_MS` | `43200000` | 动态窗口的**绝对上限**（ms，12 小时）：保证卡死任务仍在有限时间内判 failed 并清场 |
 | `VIDEO_VRAM_CHECK` | `true` | 提交前显存准入（fail-closed：查不到就不提交） |
 | `VIDEO_MIN_FREE_VRAM_MB` | `1500` | 单次推理所需的**增量显存预算**（MB，= 实测增量 ~1300 + 余量），不是整卡空闲下限 |
 | `NVIDIA_SMI_BIN` | `nvidia-smi` | 显存探针所用的 nvidia-smi 路径 |
@@ -242,9 +244,10 @@ CT131 曾经因为「任务失控 + 提交量失控」把整机拖死。为彻�
 2. **在飞上限 `VIDEO_MAX_INFLIGHT`（默认 1）**。统计同时处于 `submitting + pending` 的任务数，
    到达上限时 `tick()` 不提交新任务、留在队列等（不丢、不失败、不重复）。默认 1 的依据：gen-video
    是单进程、每次 submit 起一个线程、只有一张 8 GiB 卡，并发推理必然互相挤爆。
-3. **总超时 `VIDEO_TASK_TIMEOUT_MS`（默认 30 分钟）+ 单次 HTTP 超时**。每个任务从认领到终态
-   （含 TTS + 提交 + 轮询）有个硬墙，超过就判 `failed` 并释放，不再永远占着队列和显卡；轮询
-   gen-video 的单次请求已由 `FACE2FACE_TIMEOUT_MS`（默认 60s）兜底。
+3. **总超时窗口（DO-161，默认 30 分钟 + 每 1 秒音频 180s，上限 12 小时）+ 单次 HTTP 超时**。每个任务
+   从认领到终态（含 TTS + 提交 + 轮询）有个硬墙，超过就判 `failed` 并释放，不再永远占着队列和显卡；
+   窗口随**音频时长**放大（见「动态总超时窗口」），轮询 gen-video 的单次请求已由
+   `FACE2FACE_TIMEOUT_MS`（默认 60s）兜底。
 4. **提交前显存准入（fail-closed）+ 容器资源上限**。提交前用 `nvidia-smi` 查目标卡可用显存
    的**增量预算**（见下），低于 `VIDEO_MIN_FREE_VRAM_MB`（默认 1500 MB）或**查不到就不提交**
    （fail-closed），原因写进任务 `message` 与日志；`duix-gen-video` / `duix-tts` / `duix-asr` 三个
@@ -374,6 +377,38 @@ id=59 被判 `failed: 合成超时，已释放` 之后，gen-video 里 `828c7fe1
 > 槽位后执行一次）不在本次范围——它需要把 DO-124 的 TTS 闸改成可中断语义，属于已验收闸的语义变更。
 > 影响是白烧一次 TTS 时间，不会重复提交 gen-video（`submitting` 检查会拦住）。
 
+### 动态总超时窗口：长音频不再被误判失败（DO-161）
+
+DO-121 的实测把问题钉死了：**推理耗时随音频长度增长，而不是随文本长度**。同一张 P4000（热降频后）：
+5.8s 音频 ≈ 2 分钟，36.04s 音频（901 帧 @25fps、0.25 fps）≈ 60 分钟。固定 30 分钟的
+`VIDEO_TASK_TIMEOUT_MS` 因此把**每一条超过 ~30s 音频的正常任务**都判成 `failed: 合成超时，已释放`，
+而真正卡死的推理又必须被失败掉、不能永远占着唯一的卡槽。两者只能靠「按任务计算窗口」同时满足：
+
+```
+窗口 = min(VIDEO_TASK_TIMEOUT_MAX_MS,
+           VIDEO_TASK_TIMEOUT_MS + ceil(音频秒数) × VIDEO_TASK_TIMEOUT_PER_SEC_MS)
+截止时刻 = started_at（首次认领）+ 窗口
+```
+
+- **为什么用真实音频时长、不用文本长度**：TTS 语速在实测里跨 0.28–10.8 token/s（38 倍），文本长度
+  不是音频时长的可靠代理；`mp4-duration.js` 只解 MP4 的 `moov/mvhd`，对 WAV 不适用。新增
+  `server/src/media/wav-duration.js`：纯 RIFF/`fmt `/`data` 块头解析（不依赖 ffmpeg/ffprobe），
+  支持 PCM 的 `byteRate`、8/16 bit、多声道、奇数块对齐、`data` 长度为 `0xFFFFFFFF`/0 或越过 EOF 时
+  用文件大小回推；解析不出来就返回 `null`。
+- **时长在认领时还不知道怎么办**：音频是 TTS 之后才落盘的，所以窗口在 `synthesize()` 里 TTS 完成、
+  二次显存检查通过之后、提交 gen-video 之前计算，并持久化到新列 `video.deadline_at`
+  （迁移 `db_version 7 → 8`）。扫描侧因此只需比较绝对截止时刻，不必每个 tick 去读媒体文件。
+  该写入带 `status = 'submitting'` 条件：若在写之前扫描已经判超时，写入返回 `false`，`synthesize()`
+  直接放弃提交（不会把已 failed 的任务重新变成 `pending`）。认领时 `deadline_at` 一并清空，
+  避免上一次认领的旧截止时刻残留到新窗口。
+- **时长读不出来 / 没有音频**：`deadline_at` 退化为 `started_at + VIDEO_TASK_TIMEOUT_MS`（即固定部分），
+  任务照常提交，只是窗口不会放大——宁可短一点，也不因为探测失败而卡住任务。
+- **绝对上限仍在**：`VIDEO_TASK_TIMEOUT_MAX_MS`（默认 12h）保证窗口永远有限，卡死的推理依旧在有限时间内
+  被判 `failed` 并释放，且和 DO-160 的孤儿清场（`failTimedOut` 返回 `code` → reaper）联动，
+  容器里的线程也会被真正停掉。
+- **向后兼容**：`started_at` 为空的旧行（早于 DO-120 的库）按「从现在起算」处理，只会让窗口更短，
+  不会更长；未升级的部署仍按固定 30 分钟运行。
+
 ---
 
 ## 5. 数据目录
@@ -427,8 +462,9 @@ UPDATE video SET status = 'submitting', claimed_by = ?, claimed_at = ?, started_
    AND (SELECT COUNT(*) FROM video WHERE status IN ('submitting', 'pending')) < ?
 ```
 
-只有 `rows_affected = 1` 的实例才继续处理；实例崩溃后，任务在总超时
-（`VIDEO_TASK_TIMEOUT_MS`）后被判失败并释放，`pending` 轮询则由短租约（`WORKER_LEASE_MS`）接管。
+只有 `rows_affected = 1` 的实例才继续处理；实例崩溃后，任务在总超时窗口
+（`deadline_at`，缺失时回退 `VIDEO_TASK_TIMEOUT_MS`）后被判失败并释放，`pending` 轮询则由短租约
+（`WORKER_LEASE_MS`）接管。
 
 示例：两个 API 实例 + 一个 rqlite + 一个 nginx。
 

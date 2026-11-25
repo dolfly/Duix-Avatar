@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 
+import { taskDeadlineMs } from './task-timeout.js'
+
 /**
  * Service layer: the use cases the web UI needs, ported from the desktop client's
  * src/main/service/*.js. Everything that used to reach into Electron (ipcMain, app
@@ -338,7 +340,7 @@ function toAuditionDto(row) {
   }
 }
 
-export function createVideoService({ videoDao, modelDao, voiceService, media, tts, face2face, log, gpuGate }) {
+export function createVideoService({ videoDao, modelDao, voiceService, media, tts, face2face, log, gpuGate, taskTimeout = {} }) {
   async function page({ page = 1, pageSize = 10, name = '' } = {}) {
     const [total, rows, waiting] = await Promise.all([
       videoDao.count(name),
@@ -510,6 +512,26 @@ export function createVideoService({ videoDao, modelDao, voiceService, media, tt
         await videoDao.updateStatus(video.id, 'waiting', reason)
         return { status: 'requeued' }
       }
+    }
+
+    // Dynamic total-timeout window (DO-161). Inference time scales with the *audio* length
+    // (~115x realtime measured on the throttled P4000), so a fixed 30-minute wall killed
+    // every normal task above ~30s of audio. The window is base + perSecond*duration, capped
+    // at max, anchored at `started_at`; it is persisted as an absolute deadline so the sweep
+    // never re-reads the media file. An unknown / unreadable length degrades to the base
+    // window (still finite, still fails a stuck task).
+    const deadlineAt = taskDeadlineMs({
+      startedAt: current.started_at,
+      audioDurationSec: audioRelative ? media.probeAudioDuration(audioRelative) : null,
+      baseMs: taskTimeout.baseMs,
+      perSecondMs: taskTimeout.perSecondMs,
+      maxMs: taskTimeout.maxMs
+    })
+    if (!(await videoDao.setDeadline(video.id, deadlineAt))) {
+      // The sweep abandoned this task between the status check above and this write; do not
+      // submit a task that is no longer in `submitting` (it would come back as `pending`).
+      log?.warn?.(`video ${video.id} 已不在提交中（可能已超时），放弃提交`)
+      return { status: 'failed' }
     }
 
     const code = randomId()
